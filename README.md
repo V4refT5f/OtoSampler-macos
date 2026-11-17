@@ -23,4 +23,6 @@ Normalize 音割れしないギリギリまで音量を上げる
 波形上で左クリック+Ctrl 狭いループをクリック箇所に追加(ループ有効)  
 
 ## ライセンス
-AGPL-3.0 
+
+[GNU Affero General Public License v3.0](LICENSE).  
+[Claude](https://claude.ai/) — AI-assisted development.  
