@@ -17,7 +17,7 @@ Pre-Filter サンプルが鳴る前にLPHPフィルターを調整
 Glide ポルタメント BendでMIDIピッチベンドの深さ変更  
 Sustain loop 母音等の声を綺麗に伸ばすループ(素材に依存)  
 Normalize 音割れしないギリギリまで音量を上げる  
-
+Auto Root Rootkeyを自動で設定(Pitch Flattenをオンにて推奨)  
 ## ショートカット
 波形上で左クリック サンプルを再生  
 波形上で左クリック+Ctrl 狭いループをクリック箇所に追加(ループ有効)  
