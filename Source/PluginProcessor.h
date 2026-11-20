@@ -3,6 +3,7 @@
 #include "Params.h"
 #include "Dsp/Biquad.h"
 #include "Dsp/PitchAnalyzer.h"
+#include "Dsp/Lpc.h"
 #include "Dsp/Voice.h"
 
 class OtoProcessor : public juce::AudioProcessor,
@@ -40,6 +41,10 @@ public:
     std::shared_ptr<const oto::SampleData> getSampleData() const;
     juce::String getSampleName() const;
     int getSampleVersion() const noexcept { return sampleVersion.load(); }
+
+    // MIDI note nearest to the median pitch of the voiced part of the loaded sample, or -1 when there is no sample
+    // or no clear pitch (message thread)
+    int detectRootNote() const;
 
     static constexpr int kNumVoices = 16;
 

@@ -48,6 +48,7 @@ private:
     void paintCanvas (juce::Graphics&);
     void timerCallback() override;
     void openFileChooser();
+    void autoDetectRoot();
     void toggleTheme();
     void togglePanel();
     void saveUi();
@@ -61,6 +62,7 @@ private:
     oto::ui::WaveformView wave;
     oto::ui::PillButton openBtn { "Open Sample" };
     oto::ui::ThemeButton themeBtn;
+    oto::ui::TonalButton autoRootBtn { "Auto Root" };
     oto::ui::ThemeButton optionsBtn { oto::ui::ThemeButton::Icon::Options };
     oto::ui::OptionsPanel panel;
 

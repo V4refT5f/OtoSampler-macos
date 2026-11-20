@@ -17,6 +17,9 @@ struct PitchMap
     std::vector<uint8_t> voiced;   // 1 = voiced
     float defaultPeriod = 220.0f;
     float refPeriod = 220.0f;     // median period of the voiced part (target of Pitch Flattening)
+    // Refined glottal pulse positions (found in the LPC residual) and the distance to the previous / next pulse.
+    // Same size as marks when available (used by the formant-preserving engine only).
+    std::vector<float>   gci, gl, gr;
 
     int nearest (double pos) const noexcept
     {
@@ -65,6 +68,14 @@ inline float maxStartNorm (const PitchMap& m, int numSamples, bool loopOn, float
     return (float) std::clamp (r.s / (double) numSamples, 0.0, 1.0);
 }
 
+// Time-varying all-pole spectral envelope of the sample (reflection coefficients, one frame every hop samples)
+struct LpcTrack
+{
+    int order = 0, hop = 0, numFrames = 0;
+    std::vector<float> k;         // numFrames * order
+    bool valid() const noexcept { return order > 0 && hop > 0 && numFrames > 1 && (int) k.size() == order * numFrames; }
+};
+
 // Immutable decoded sample + analysis
 struct SampleSource
 {
@@ -72,6 +83,7 @@ struct SampleSource
     double sampleRate = 44100.0;
     std::string name;
     PitchMap map;
+    LpcTrack lpc;
     int numSamples() const noexcept { return channels.empty() ? 0 : (int) channels[0].size(); }
 };
 
@@ -80,8 +92,14 @@ struct SampleData
 {
     std::shared_ptr<const SampleSource> source;
     std::vector<std::vector<float>> channels;
+    std::vector<std::vector<float>> residual;   // LPC residual of every channel (formant-preserving engine)
     float peak = 1.0f;
     int numSamples() const noexcept { return channels.empty() ? 0 : (int) channels[0].size(); }
     int numChannels() const noexcept { return (int) channels.size(); }
+    bool hasLpc() const noexcept
+    {
+        return source != nullptr && source->lpc.valid() && ! residual.empty() && residual.size() == channels.size()
+            && source->map.gci.size() == source->map.marks.size() && source->map.gl.size() == source->map.marks.size();
+    }
 };
 }

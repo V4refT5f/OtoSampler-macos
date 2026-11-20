@@ -1,10 +1,11 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 rem Run as Administrator
-set CONFIG=Release
-if /i "%~1"=="debug" set CONFIG=Debug
-set SRC=%~dp0build\OtoSampler_artefacts\%CONFIG%\VST3\Oto Sampler.vst3
-set DST=%CommonProgramFiles%\VST3
+set "CONFIG=Release"
+if /i "%~1"=="debug" set "CONFIG=Debug"
+set "SRC=%~dp0dist\Oto Sampler.vst3"
+if not exist "%SRC%" set "SRC=%SystemDrive%\oto_build\OtoSampler_artefacts\%CONFIG%\VST3\Oto Sampler.vst3"
+set "DST=%CommonProgramFiles%\VST3"
 
 if not exist "%SRC%" (
     echo Build first with build.bat

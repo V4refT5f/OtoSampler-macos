@@ -1,50 +1,17 @@
 #include "Voice.h"
+#include "Interp.h"
 
 namespace oto
 {
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
-
-struct HannTable
-{
-    float t[1026];
-    HannTable() { for (int i = 0; i < 1026; ++i) t[i] = 0.5f - 0.5f * (float) std::cos (2.0 * kPi * i / 1024.0); }
-};
-const HannTable& hannTable() { static const HannTable h; return h; }
-
-inline float hannAt (float x) noexcept
-{
-    const auto& t = hannTable().t;
-    const float p = x * 1024.f; const int i = (int) p; const float f = p - (float) i;
-    return t[i] + (t[i + 1] - t[i]) * f;
+// The LPC residual engine is used for large pitch-up shifts, where plain PSOLA breaks down. For small shifts and for
+// pitch-down the (window-corrected) PSOLA path is at least as good, and for very high voices (above ~300 Hz) the LPC
+// envelope cannot follow the narrow resonances, so that path is used there as well.
+// The choice is made once per note, so vibrato / glide / bend can never switch engines in the middle of a note.
+constexpr float kLpMinSemis = 6.0f;
+constexpr double kLpMaxF0Period = 0.0033;     // seconds (= 303 Hz)
 }
-
-// 4-point Hermite, zero outside the buffer
-inline float readSample (const float* d, int n, double pos) noexcept
-{
-    const int i = (int) std::floor (pos);
-    const float f = (float) (pos - i);
-    float y0, y1, y2, y3;
-    if (i >= 1 && i + 2 < n) { y0 = d[i - 1]; y1 = d[i]; y2 = d[i + 1]; y3 = d[i + 2]; }
-    else
-    {
-        auto at = [&] (int k) { return (k >= 0 && k < n) ? d[k] : 0.f; };
-        y0 = at (i - 1); y1 = at (i); y2 = at (i + 1); y3 = at (i + 2);
-    }
-    const float c1 = 0.5f * (y2 - y0);
-    const float c2 = y0 - 2.5f * y1 + 2.f * y2 - 0.5f * y3;
-    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-    return ((c3 * f + c2) * f + c1) * f + y1;
-}
-
-inline float crossW2 (double m) noexcept   // 0..1 -> sin^2 (sums to 1 with cos^2)
-{
-    const double s = std::sin (std::clamp (m, 0.0, 1.0) * kPi * 0.5);
-    return (float) (s * s);
-}
-}
-
 void Voice::start (const SampleData& d, int midiNote, float vel, float glideFromPitch,
                    const VoiceParams& p, std::uint64_t serial) noexcept
 {
@@ -61,6 +28,12 @@ void Voice::start (const SampleData& d, int midiNote, float vel, float glideFrom
     lfoPhase = 0.0; vibTime = 0.0; initDone = false;
     for (auto& g : grains) g.active = false;
     firstGrain = true; sourceDone = false; spawnCountdown = 0.0; loopArmed = false;
+    engInited = false; engDone = false;
+    {
+        const float semis0 = (float) (note_ - p.rootKey) + p.coarseSemis;
+        lpChosen = d.hasLpc() && semis0 >= kLpMinSemis
+                && (double) d.source->map.refPeriod >= kLpMaxF0Period * d.source->sampleRate;
+    }
     adsr.setSampleRate (sr);
     adsr.setParams (p.attackMs, p.decayMs, p.sustain, p.releaseMs);
     adsr.kill();
@@ -80,7 +53,9 @@ void Voice::spawnGrain (const SampleData& d, const VoiceParams& p, double r, dou
     const double g = (p.formantHold ? 1.0 : r) * k;                 // source samples per output sample
     const double Tbase = (p.flatten && voiced) ? (double) m.refPeriod : Tin;   // flatten: constant output period
     const double Tout = std::clamp (Tbase / (k * rEff), 24.0, 16000.0); // output hop (host samples)
-    const double half = std::max (Tout, Tin / g);
+    // Formant Hold: the grain always spans ~2 source periods. Widening it to the output hop (pitch down) would let the
+    // window contain several source periods, which rebuilds the ORIGINAL pitch instead of lowering it.
+    const double half = p.formantHold ? Tin / g : std::max (Tout, Tin / g);
     const int len = std::max (16, (int) std::ceil (2.0 * half));
 
     Grain* slot = nullptr;
@@ -89,7 +64,7 @@ void Voice::spawnGrain (const SampleData& d, const VoiceParams& p, double r, dou
     {
         slot->active = true; slot->c1 = c1; slot->g = g; slot->len = len;
         slot->age = firstGrain ? len / 2 : 0;       // first grain starts at its peak (no fade-in of the attack)
-        slot->gain = (float) (Tout / half);
+        slot->gain = (float) std::min (1.0, Tout / half);
         slot->w2 = 0.f; slot->shift = 0.0;
         slot->wA = slot->wB = 0.f; slot->offA = slot->offB = 0.0;
         if ((p.formantHold || p.flatten) && p.denoise > 0.f && voiced)
@@ -149,8 +124,24 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
         }
     }
 
+    const bool useLp = lpChosen && p.formantHold && d.hasLpc();
     const bool useGrains = p.formantHold || p.speedHold || p.flatten;
     usingGrains = useGrains;
+    EngineParams ep;
+    ep.speedHold = p.speedHold; ep.flatten = p.flatten; ep.denoise = p.denoise; ep.loop = L;
+    if (useLp && ! engInited)
+    {
+        eng.start (usingGrainsPrev ? a : pos);
+        engInited = true; engDone = false; engFrac = 0.0; engTail = 0;
+        for (int q = 0; q < 4; ++q) ringL[q] = ringR[q] = 0.f;
+    }
+    else if (! useLp && engInited)
+    {
+        a = pos = eng.position();
+        engInited = false; firstGrain = true; spawnCountdown = 0.0; sourceDone = false;
+        for (auto& g : grains) g.active = false;
+    }
+    usingGrainsPrev = useGrains;
     const float bendCoef = std::exp (-1.f / (0.005f * (float) sr));
     const float gainCoef = std::exp (-1.f / (0.010f * (float) sr));
     const float glideCoef = p.glideMs > 0.5f ? std::exp (-6.9f / (p.glideMs * 0.001f * (float) sr)) : 0.f;
@@ -182,7 +173,24 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
 
         float l = 0.f, rr = 0.f;
 
-        if (! useGrains)
+        if (useLp)
+        {
+            // ---------- formant-preserving engine (LPC residual PSOLA) ----------
+            engFrac += k;
+            while (engFrac >= 1.0)
+            {
+                engFrac -= 1.0;
+                float nl = 0.f, nr = 0.f;
+                if (! engDone && ! eng.step (d, ep, r, nl, nr)) engDone = true;
+                ringL[0] = ringL[1]; ringL[1] = ringL[2]; ringL[2] = ringL[3]; ringL[3] = nl;
+                ringR[0] = ringR[1]; ringR[1] = ringR[2]; ringR[2] = ringR[3]; ringR[3] = nr;
+            }
+            const float ff = (float) engFrac;
+            l  = hermite (ringL[0], ringL[1], ringL[2], ringL[3], ff);
+            rr = hermite (ringR[0], ringR[1], ringR[2], ringR[3], ff);
+            if (engDone && ++engTail > 8) { kill(); break; }
+        }
+        else if (! useGrains)
         {
             // ---------- plain resampling (varispeed) ----------
             // the loop only engages once the read position has been before the loop end

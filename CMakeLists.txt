@@ -11,7 +11,15 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(OTO_COPY_AFTER_BUILD "Copy the VST3 to %CommonProgramFiles%/VST3 after build (needs admin rights)" OFF)
 option(OTO_BUILD_STANDALONE "Also build a Standalone app (handy for testing without a DAW)" ON)
-set(OTO_JUCE_TAG "8.0.8" CACHE STRING "JUCE git tag to fetch")
+# 8.0.14 or newer: shallower build tree (Windows MAX_PATH) and Visual Studio 2026 support
+set(OTO_JUCE_TAG "8.0.14" CACHE STRING "JUCE git tag to fetch")
+
+if(WIN32)
+    string(LENGTH "${CMAKE_BINARY_DIR}" OTO_BIN_PATH_LEN)
+    if(OTO_BIN_PATH_LEN GREATER 40)
+        message(WARNING "The build folder path is long (${OTO_BIN_PATH_LEN} characters). The JUCE VST3 helper is built in a very deep folder and can hit the Windows 260 character path limit. Use build.bat (builds in a short folder) or choose a shorter build folder.")
+    endif()
+endif()
 
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
@@ -55,6 +63,11 @@ target_sources(OtoSampler PRIVATE
     Source/Dsp/SampleTypes.h
     Source/Dsp/Adsr.h
     Source/Dsp/Biquad.h
+    Source/Dsp/Interp.h
+    Source/Dsp/Lpc.h
+    Source/Dsp/Lpc.cpp
+    Source/Dsp/FormantEngine.h
+    Source/Dsp/FormantEngine.cpp
     Source/Dsp/PitchAnalyzer.h
     Source/Dsp/PitchAnalyzer.cpp
     Source/Dsp/Voice.h

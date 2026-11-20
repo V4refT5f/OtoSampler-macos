@@ -86,6 +86,7 @@ std::shared_ptr<SampleSource> OtoProcessor::decode (const juce::MemoryBlock& mb,
         mono[(size_t) i] = s / (float) numCh;
     }
     src->map = analyzePitch (mono, src->sampleRate);
+    analyzeLpc (mono, src->sampleRate, src->map, src->lpc);   // spectral envelope + pulse positions (formant-preserving engine)
     return src;
 }
 
@@ -101,6 +102,7 @@ std::shared_ptr<SampleData> OtoProcessor::buildSampleData (std::shared_ptr<const
         for (float v : ch) peak = std::max (peak, std::abs (v));
     }
     d->peak = std::max (peak, 1e-6f);
+    computeResiduals (*d);   // LPC residual of the pre-filtered channels
     return d;
 }
 
@@ -157,6 +159,26 @@ std::shared_ptr<const SampleData> OtoProcessor::getSampleData() const
 {
     const juce::ScopedLock sl (lock);
     return owned;
+}
+
+int OtoProcessor::detectRootNote() const
+{
+    const auto d = getSampleData();
+    if (d == nullptr || d->source == nullptr) return -1;
+    const auto& m = d->source->map;
+    if (m.voiced.size() != m.marks.size() || m.periods.size() != m.marks.size()) return -1;
+
+    std::vector<float> per;
+    for (size_t i = 0; i < m.marks.size(); ++i)
+        if (m.voiced[i] && m.periods[i] > 1.f) per.push_back (m.periods[i]);
+    if (per.size() < 6) return -1;                                   // not enough pitched material
+
+    std::nth_element (per.begin(), per.begin() + (long) (per.size() / 2), per.end());
+    const double hz = d->source->sampleRate / (double) per[per.size() / 2];
+    if (! (hz > 16.0 && hz < 8000.0)) return -1;
+
+    const int note = (int) std::lround (69.0 + 12.0 * std::log2 (hz / 440.0));
+    return juce::jlimit (0, 127, note);
 }
 
 juce::String OtoProcessor::getSampleName() const

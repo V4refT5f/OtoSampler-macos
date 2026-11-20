@@ -31,7 +31,7 @@ OtoEditor::OtoEditor (OtoProcessor& p)
     canvas.onPaint = [this] (juce::Graphics& g) { paintCanvas (g); };
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &wave, &openBtn, &optionsBtn, &themeBtn,
+             &wave, &openBtn, &optionsBtn, &themeBtn, &autoRootBtn,
              &kRoot, &kPitch, &kFine, &kVolume, &kStart, &kVel, &kA, &kD, &kS, &kR,
              &kXfade, &kVibRate, &kVibDepth, &kVibDelay, &kGlide, &kBend, &kDenoise, &kHp, &kLp,
              &swNormalize, &swFormant, &swSpeed, &swFlatten, &swLoop, &swMono, &swPre, &filterView })
@@ -47,8 +47,10 @@ OtoEditor::OtoEditor (OtoProcessor& p)
     juce::Desktop::getInstance().addGlobalMouseListener (this);
 
     kStart.limitValue = [this] (float v) { return juce::jmin (v, proc.getStartLimit()); };
+    kPitch.shiftStep = 12.f;   // Shift + turn = one octave per step
 
     openBtn.onClick = [this] { openFileChooser(); };
+    autoRootBtn.onClick = [this] { autoDetectRoot(); };
     wave.onClickEmpty = [this] { openFileChooser(); };
     {
         auto* pp = &proc;
@@ -152,6 +154,19 @@ void OtoEditor::resized()
     layoutCanvas (vw, vh);
 }
 
+void OtoEditor::autoDetectRoot()
+{
+    if (proc.getSampleData() == nullptr) { autoRootBtn.flash ("No sample"); return; }
+    const int note = proc.detectRootNote();
+    if (note < 0) { autoRootBtn.flash ("No pitch"); return; }
+
+    auto& rp = P (ids::root);
+    rp.beginChangeGesture();
+    rp.setValueNotifyingHost (rp.convertTo0to1 ((float) note));
+    rp.endChangeGesture();
+    autoRootBtn.flash (rp.getText (rp.getValue(), 16));
+}
+
 void OtoEditor::layoutCanvas (int W, int H)
 {
     const int M = 16, G = 8;
@@ -205,6 +220,7 @@ void OtoEditor::layoutCanvas (int W, int H)
 
     // header switches
     swNormalize.setBounds (cSample.getRight() - 12 - swNormalize.getIdealWidth(), cSample.getY() + 8, swNormalize.getIdealWidth(), 28);
+    autoRootBtn.setBounds (swNormalize.getX() - 10 - 92, cSample.getY() + 8, 92, 28);
     swLoop.setBounds (cLoop.getRight() - 12 - 44, cLoop.getY() + 8, 44, 28);
     swMono.setBounds (cGlide.getRight() - 12 - swMono.getIdealWidth(), cGlide.getY() + 8, swMono.getIdealWidth(), 28);
     swPre.setBounds (cPre.getRight() - 12 - 44, cPre.getY() + 8, 44, 28);

@@ -71,6 +71,10 @@ public:
     // Optional limiter applied to every value this knob writes (real parameter units)
     std::function<float (float)> limitValue;
 
+    // Optional coarse step (real parameter units). While Shift is held, dragging / wheel only lands on multiples of
+    // this step (0 = disabled, Shift = fine drag).
+    float shiftStep = 0.f;
+
     void mouseEnter (const juce::MouseEvent&) override { hover = true; wake(); }
     void mouseExit  (const juce::MouseEvent&) override { hover = false; wake(); }
 
@@ -94,9 +98,11 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (! pressed) return;
+        const bool stepped = shiftStep > 0.f && e.mods.isShiftDown();
         const float d = (float) (e.getDistanceFromDragStartX() - e.getDistanceFromDragStartY())
-                        / (e.mods.isShiftDown() ? 900.f : 240.f);
-        setNorm (dragStart + d, true);
+                        / ((e.mods.isShiftDown() && ! stepped) ? 900.f : 240.f);
+        if (stepped) setStepped (dragStart + d);
+        else         setNorm (dragStart + d, true);
     }
     void mouseUp (const juce::MouseEvent& e) override
     {
@@ -113,8 +119,24 @@ public:
         if (pressed) { attachment.setValueAsPartOfGesture (def); dragStart = normTarget; }
         else         attachment.setValueAsCompleteGesture (def);
     }
-    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
+        if (shiftStep > 0.f && e.mods.isShiftDown())        // Shift + wheel = one step per notch
+        {
+            const float dy = w.deltaY != 0.f ? w.deltaY : w.deltaX;
+            wheelAcc += w.isReversed ? -dy : dy;            // smooth-scrolling devices send many tiny deltas
+            const int n = (int) (wheelAcc / 0.3f);
+            if (n == 0) return;
+            wheelAcc -= (float) n * 0.3f;
+            const auto range = param.getNormalisableRange();
+            const float cur = param.convertFrom0to1 (normTarget);
+            float k = n > 0 ? std::floor (cur / shiftStep) + (float) n : std::ceil (cur / shiftStep) + (float) n;
+            k = juce::jlimit (std::ceil (range.start / shiftStep), std::floor (range.end / shiftStep), k);
+            float real = range.snapToLegalValue (k * shiftStep);
+            if (limitValue) real = limitValue (real);
+            attachment.setValueAsCompleteGesture (real);
+            return;
+        }
         setNorm (normTarget + w.deltaY * (w.isReversed ? -0.15f : 0.15f), false);
     }
 
@@ -126,6 +148,19 @@ private:
         if (limitValue) real = limitValue (real);
         if (partOfGesture) attachment.setValueAsPartOfGesture (real);
         else               attachment.setValueAsCompleteGesture (real);
+    }
+
+    // Shift drag: only multiples of shiftStep, kept inside the parameter range
+    void setStepped (float n)
+    {
+        const auto range = param.getNormalisableRange();
+        const float raw = param.convertFrom0to1 (juce::jlimit (0.f, 1.f, n));
+        const float lo = std::ceil (range.start / shiftStep), hi = std::floor (range.end / shiftStep);
+        float k = std::round (raw / shiftStep);
+        k = lo <= hi ? juce::jlimit (lo, hi, k) : k;
+        float real = range.snapToLegalValue (k * shiftStep);
+        if (limitValue) real = limitValue (real);
+        attachment.setValueAsPartOfGesture (real);
     }
 
     bool stepAnimation (float dt) override
@@ -190,7 +225,7 @@ private:
     juce::RangedAudioParameter& param;
     juce::String label;
     bool bipolar;
-    float normTarget = 0.f, normDisp = 0.f, dragStart = 0.f, hoverMix = 0.f;
+    float normTarget = 0.f, normDisp = 0.f, dragStart = 0.f, hoverMix = 0.f, wheelAcc = 0.f;
     bool hover = false, pressed = false;
     Spring scale { 1.f, 0.f };
     std::unique_ptr<juce::TextEditor> box;
@@ -210,7 +245,7 @@ public:
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
     }
 
-    int getIdealWidth() const { return 44 + (label.isEmpty() ? 0 : 10 + (int) std::ceil (font (13.f).getStringWidthFloat (label))); }
+    int getIdealWidth() const { return 44 + (label.isEmpty() ? 0 : 10 + (int) std::ceil (juce::GlyphArrangement::getStringWidth (font (13.f), label))); }
 
     void paint (juce::Graphics& g) override
     {
@@ -345,6 +380,67 @@ private:
     }
     juce::String text;
     bool hover = false, pressed = false;
+    float hoverMix = 0.f;
+    Spring scale { 1.f, 0.f };
+};
+
+// Small tonal pill for card headers. flash() shows a short message on the button for a moment.
+class TonalButton : public AnimatedBase
+{
+public:
+    explicit TonalButton (juce::String t) : text (std::move (t)), shown (text)
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+    std::function<void()> onClick;
+
+    void flash (const juce::String& message, int ms = 1500)
+    {
+        shown = message; flashing = true; repaint();
+        const int id = ++flashId;
+        juce::Component::SafePointer<TonalButton> safe (this);
+        juce::Timer::callAfterDelay (ms, [safe, id]
+        {
+            if (safe == nullptr || safe->flashId != id) return;
+            safe->shown = safe->text; safe->flashing = false; safe->repaint();
+        });
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& P = pal();
+        const auto b = getLocalBounds().toFloat().reduced (2.f);
+        g.saveState();
+        g.addTransform (juce::AffineTransform::scale (scale.x, scale.x, b.getCentreX(), b.getCentreY()));
+        const auto fill = flashing ? P.primaryContainer : P.containerHigh.interpolatedWith (P.primaryContainer, hoverMix);
+        g.setColour (fill);
+        g.fillRoundedRectangle (b, b.getHeight() * 0.5f);
+        g.setColour (flashing ? P.onPrimaryContainer : P.onSurface.interpolatedWith (P.onPrimaryContainer, hoverMix));
+        g.setFont (font (12.5f, true));
+        g.drawText (shown, b.reduced (6.f, 0.f), juce::Justification::centred, true);
+        g.restoreState();
+    }
+    void mouseEnter (const juce::MouseEvent&) override { hover = true; wake(); }
+    void mouseExit  (const juce::MouseEvent&) override { hover = false; pressed = false; wake(); }
+    void mouseDown  (const juce::MouseEvent&) override { pressed = true; wake(); }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        const bool inside = getLocalBounds().contains (e.getPosition());
+        pressed = false; wake();
+        if (inside && onClick) onClick();
+    }
+private:
+    bool stepAnimation (float dt) override
+    {
+        const float tg = anim (pressed ? 0.94f : (hover ? 1.05f : 1.f));
+        scale.step (tg, 300.f, 16.f, dt);
+        if (animationsEnabled()) hoverMix += ((hover ? 1.f : 0.f) - hoverMix) * 0.15f;
+        else hoverMix = hover ? 1.f : 0.f;
+        return ! scale.settled (tg) || std::abs (hoverMix - (hover ? 1.f : 0.f)) > 0.004f;
+    }
+    juce::String text, shown;
+    bool hover = false, pressed = false, flashing = false;
+    int flashId = 0;
     float hoverMix = 0.f;
     Spring scale { 1.f, 0.f };
 };

@@ -1,5 +1,6 @@
 #pragma once
 #include "Adsr.h"
+#include "FormantEngine.h"
 #include "SampleTypes.h"
 #include <array>
 #include <cstdint>
@@ -35,13 +36,13 @@ public:
     void start (const SampleData& d, int midiNote, float velocity01, float glideFromPitch,
                 const VoiceParams& p, std::uint64_t serial) noexcept;
     void release() noexcept { gated = false; pedalHeld = false; adsr.noteOff(); }
-    void kill() noexcept { active = false; gated = false; pedalHeld = false; adsr.kill(); }
+    void kill() noexcept { active = false; gated = false; pedalHeld = false; engInited = false; adsr.kill(); }
 
     bool isActive() const noexcept { return active; }
     bool isGated() const noexcept { return gated; }
     int  note() const noexcept { return note_; }
     // current read position in source samples (for the UI playhead)
-    double sourcePosition() const noexcept { return usingGrains ? a : pos; }
+    double sourcePosition() const noexcept { return engInited ? eng.position() : (usingGrains ? a : pos); }
     float currentPitch() const noexcept { return (float) note_ + glideOffset; }
     std::uint64_t serial() const noexcept { return serial_; }
 
@@ -54,7 +55,6 @@ public:
 
 private:
     struct Grain { bool active = false; double c1 = 0, g = 1, shift = 0, offA = 0, offB = 0; float gain = 1.f, w2 = 0.f, wA = 0.f, wB = 0.f; int age = 0, len = 0; };
-    struct LoopInfo { bool active = false; double s = 0, e = 0, len = 0, xf = 1; };
 
     void spawnGrain (const SampleData& d, const VoiceParams& p, double r, double k, const LoopInfo& L) noexcept;
 
@@ -72,7 +72,14 @@ private:
     std::array<Grain, 24> grains {};
 
     float bendCur = 0.f, gainSm = 0.f, glideOffset = 0.f;
-    bool initDone = false;
+    bool initDone = false, usingGrainsPrev = false;
     double lfoPhase = 0.0, vibTime = 0.0;
+
+    // formant-preserving engine (runs at the source rate, resampled to the host rate)
+    FormantEngine eng;
+    bool engInited = false, engDone = false, lpChosen = false;
+    double engFrac = 0.0;
+    int engTail = 0;
+    float ringL[4] = {}, ringR[4] = {};
 };
 }
