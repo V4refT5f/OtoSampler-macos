@@ -54,7 +54,7 @@ public:
     bool preview = false;       // started by right-click on the waveform (ignored by MIDI note-off)
 
 private:
-    struct Grain { bool active = false; double c1 = 0, g = 1, shift = 0, offA = 0, offB = 0; float gain = 1.f, w2 = 0.f, wA = 0.f, wB = 0.f; int age = 0, len = 0; };
+    struct Grain { bool active = false; double c1 = 0, g = 1, shift = 0, offA = 0, offB = 0, frac = 0; float gain = 1.f, w2 = 0.f, wA = 0.f, wB = 0.f; int age = 0, len = 0; };
 
     void spawnGrain (const SampleData& d, const VoiceParams& p, double r, double k, const LoopInfo& L) noexcept;
 
@@ -69,7 +69,7 @@ private:
     double a = 0.0;                  // grain engine analysis position
     double spawnCountdown = 0.0;
     bool firstGrain = true, sourceDone = false, loopArmed = false, usingGrains = false;
-    std::array<Grain, 24> grains {};
+    std::array<Grain, 48> grains {};
 
     float bendCur = 0.f, gainSm = 0.f, glideOffset = 0.f;
     bool initDone = false, usingGrainsPrev = false;

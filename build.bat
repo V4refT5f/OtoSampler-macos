@@ -7,7 +7,7 @@ rem         build.bat clean           delete the build folder first
 rem         build.bat debug           build Debug instead of Release
 rem         build.bat juce=8.0.8      use another JUCE tag
 rem
-rem The build runs in a SHORT folder (%SystemDrive%\oto_build). JUCE builds its VST3 helper in a very deep folder,
+rem The build runs in a SHORT folder in %SystemDrive%\oto_build\HASH, where HASH is made from the path of this folder. JUCE builds its VST3 helper in a very deep folder,
 rem and long paths stop the build right after "juce_VST3ManifestHelper.cpp".
 rem Results are copied to the "dist" folder next to this file.
 rem If the build fails, build_log.txt is written and the error lines are shown.
@@ -26,7 +26,11 @@ shift
 goto :args
 :argsdone
 
-set "BDIR=%SystemDrive%\oto_build"
+rem One build folder per project location (hash of this folder path), so several copies never share a CMake cache.
+set "OTOHASH="
+for /f %%H in ('powershell -NoProfile -Command "[BitConverter]::ToString([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes('%~dp0'.ToLower()))).Replace('-','').Substring(0,8)"') do set "OTOHASH=%%H"
+if not defined OTOHASH set "OTOHASH=default"
+set "BDIR=%SystemDrive%\oto_build\%OTOHASH%"
 set "LOG=%~dp0build_log.txt"
 set "DIST=%~dp0dist"
 set "ART=%BDIR%\OtoSampler_artefacts\%CONFIG%"

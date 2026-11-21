@@ -100,18 +100,21 @@ void FormantEngine::spawn (const SampleData& d, const EngineParams& p, double r,
     const double Tin = 0.5 * (hl + hr);
     const double rEff = voiced ? r : 1.0;
     const double Tbase = (p.flatten && voiced) ? (double) m.refPeriod : hr;   // distance to the next pulse (exact at ratio 1)
-    const double minHop = std::max (16.0, 0.0005 * d.source->sampleRate);
+    const double minHop = std::max (4.0, 0.0001 * d.source->sampleRate);    // pitches up to ~10 kHz
     const double Tout = std::clamp (Tbase / rEff, minHop, 0.4 * d.source->sampleRate);
+
+    // at very large pitch-up factors limit the overlap (grain length <= 24 output hops) so the grain slots never run out
+    const double hlU = std::min (hl, 24.0 * Tout), hrU = std::min (hr, 24.0 * Tout);
 
     if (slot != nullptr)
     {
-        const double S = nextCenter - hl;                  // ideal start time of the grain
+        const double S = nextCenter - hlU;                 // ideal start time of the grain
         const int I = (int) std::lround (S);
         slot->active = true; slot->nt = nt;
         for (int q = 0; q < nt; ++q) { slot->tc[q] = tc[q]; slot->tw[q] = tw[q]; }
-        slot->hl = hl; slot->hr = hr; slot->cpos = nextCenter - (double) I;
+        slot->hl = hlU; slot->hr = hrU; slot->cpos = nextCenter - (double) I;
         slot->age = -I;
-        slot->len = (int) std::ceil (slot->cpos + hr) + 2;
+        slot->len = (int) std::ceil (slot->cpos + hrU) + 2;
         slot->gain = levelFor (Tin / Tout);
         slot->w2 = 0.f; slot->shift = 0.0;
         if (p.loop.active && lp && ac >= L.e - L.xf)
@@ -125,7 +128,7 @@ void FormantEngine::spawn (const SampleData& d, const EngineParams& p, double r,
         for (int q = 0; q < nt; ++q) { sw += (double) tw[q]; sc += (double) tw[q] * tc[q]; }
         filtOffTarget = sw > 0.0 ? std::clamp (sc / sw - ac, -2000.0, 2000.0) : 0.0;
     }
-    lastHl = hl;
+    lastHl = hlU;
     nextCenter += Tout;
 }
 

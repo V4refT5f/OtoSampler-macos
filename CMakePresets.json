@@ -7,7 +7,7 @@
       "displayName": "Visual Studio 2026 (x64)",
       "generator": "Visual Studio 18 2026",
       "architecture": { "value": "x64", "strategy": "set" },
-      "binaryDir": "$env{SystemDrive}/oto_build"
+      "binaryDir": "$env{SystemDrive}/oto_build/${sourceDirName}"
     },
     {
       "name": "vs2026-install",
@@ -20,7 +20,7 @@
       "displayName": "Visual Studio 2022 (x64) fallback",
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
-      "binaryDir": "$env{SystemDrive}/oto_build"
+      "binaryDir": "$env{SystemDrive}/oto_build/${sourceDirName}"
     }
   ],
   "buildPresets": [

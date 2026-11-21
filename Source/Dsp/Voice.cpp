@@ -52,10 +52,12 @@ void Voice::spawnGrain (const SampleData& d, const VoiceParams& p, double r, dou
     const double rEff = voiced ? r : 1.0;
     const double g = (p.formantHold ? 1.0 : r) * k;                 // source samples per output sample
     const double Tbase = (p.flatten && voiced) ? (double) m.refPeriod : Tin;   // flatten: constant output period
-    const double Tout = std::clamp (Tbase / (k * rEff), 24.0, 16000.0); // output hop (host samples)
+    // output hop (host samples); the lower limit allows output pitches up to ~10 kHz (it used to stop at ~1.8 kHz)
+    const double Tout = std::clamp (Tbase / (k * rEff), 4.0, 16000.0);
     // Formant Hold: the grain always spans ~2 source periods. Widening it to the output hop (pitch down) would let the
     // window contain several source periods, which rebuilds the ORIGINAL pitch instead of lowering it.
-    const double half = p.formantHold ? Tin / g : std::max (Tout, Tin / g);
+    // (limited to 8 hops so that very high pitches never need more grains than there are slots)
+    const double half = p.formantHold ? std::min (Tin / g, 8.0 * Tout) : std::max (Tout, Tin / g);
     const int len = std::max (16, (int) std::ceil (2.0 * half));
 
     Grain* slot = nullptr;
@@ -64,6 +66,9 @@ void Voice::spawnGrain (const SampleData& d, const VoiceParams& p, double r, dou
     {
         slot->active = true; slot->c1 = c1; slot->g = g; slot->len = len;
         slot->age = firstGrain ? len / 2 : 0;       // first grain starts at its peak (no fade-in of the attack)
+        // spawnCountdown is <= 0 here: the grain should have started that many (sub-)samples ago. Keeping the fraction
+        // places every grain with sub-sample accuracy instead of on the integer sample grid (pitch jitter at high pitch).
+        slot->frac = firstGrain ? 0.0 : std::clamp (-spawnCountdown, 0.0, 1.0);
         slot->gain = (float) std::min (1.0, Tout / half);
         slot->w2 = 0.f; slot->shift = 0.0;
         slot->wA = slot->wB = 0.f; slot->offA = slot->offB = 0.0;
@@ -228,8 +233,9 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
             {
                 if (! gr.active) continue;
                 ++living;
-                const double sp = gr.c1 + ((double) gr.age + 0.5 - 0.5 * gr.len) * gr.g;
-                const float w = hannAt (((float) gr.age + 0.5f) / (float) gr.len) * gr.gain;
+                const double ag = (double) gr.age + gr.frac;
+                const double sp = gr.c1 + (ag + 0.5 - 0.5 * gr.len) * gr.g;
+                const float w = hannAt ((float) ((ag + 0.5) / (double) gr.len)) * gr.gain;
                 auto tap = [&] (double q, float& tl, float& tr)
                 {
                     tl = readSample (c0, N, q); tr = readSample (c1, N, q);

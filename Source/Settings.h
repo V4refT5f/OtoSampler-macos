@@ -11,6 +11,8 @@ struct UiSettings
     float hue = -1.f;          // -1 = default accent, otherwise 0..1
     bool  animations = true;
     int   width = 1180, height = 580;   // editor size
+    bool  keyboard = false;             // height was saved with the keyboard shown (written by older versions only)
+    bool  keyboardKnown = false;        // true when the settings file has the keyboard entry
 };
 
 inline juce::PropertiesFile::Options uiSettingsOptions()
@@ -35,6 +37,8 @@ inline UiSettings loadUiSettings()
     if (pf.containsKey ("animations")) s.animations = pf.getBoolValue ("animations", true);
     s.width  = juce::jlimit (720, 3840, pf.getIntValue ("width", s.width));
     s.height = juce::jlimit (360, 2160, pf.getIntValue ("height", s.height));
+    s.keyboardKnown = pf.containsKey ("keyboard");
+    if (s.keyboardKnown) s.keyboard = pf.getBoolValue ("keyboard", false);
     return s;
 }
 
@@ -46,6 +50,7 @@ inline void saveUiSettings (const UiSettings& s)
     pf.setValue ("animations", s.animations);
     pf.setValue ("width", s.width);
     pf.setValue ("height", s.height);
+    pf.setValue ("keyboard", s.keyboard);
     pf.saveIfNeeded();
 }
 }

@@ -345,6 +345,8 @@ void OtoProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
         for (auto& v : voices) if (v.preview && v.isActive() && v.isGated()) v.release();
     }
 
+    keyboardState.processNextMidiBuffer (midi, 0, numSamples, true);   // on-screen keyboard -> MIDI
+
     int pos = 0;
     for (const auto meta : midi)
     {

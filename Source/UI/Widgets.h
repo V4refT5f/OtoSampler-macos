@@ -75,6 +75,10 @@ public:
     // this step (0 = disabled, Shift = fine drag).
     float shiftStep = 0.f;
 
+    // Drag distance (pixels) for the full range of the parameter; wide ranges use a larger value to keep the
+    // resolution per unit the same
+    float dragPixels = 240.f;
+
     void mouseEnter (const juce::MouseEvent&) override { hover = true; wake(); }
     void mouseExit  (const juce::MouseEvent&) override { hover = false; wake(); }
 
@@ -100,7 +104,7 @@ public:
         if (! pressed) return;
         const bool stepped = shiftStep > 0.f && e.mods.isShiftDown();
         const float d = (float) (e.getDistanceFromDragStartX() - e.getDistanceFromDragStartY())
-                        / ((e.mods.isShiftDown() && ! stepped) ? 900.f : 240.f);
+                        / ((e.mods.isShiftDown() && ! stepped) ? dragPixels * 3.75f : dragPixels);
         if (stepped) setStepped (dragStart + d);
         else         setNorm (dragStart + d, true);
     }
@@ -137,7 +141,7 @@ public:
             attachment.setValueAsCompleteGesture (real);
             return;
         }
-        setNorm (normTarget + w.deltaY * (w.isReversed ? -0.15f : 0.15f), false);
+        setNorm (normTarget + w.deltaY * (w.isReversed ? -0.15f : 0.15f) * (240.f / dragPixels), false);
     }
 
 private:
@@ -448,9 +452,10 @@ private:
 class ThemeButton : public AnimatedBase
 {
 public:
-    enum class Icon { Theme, Options };
+    enum class Icon { Theme, Options, Keyboard };
     explicit ThemeButton (Icon i = Icon::Theme) : icon (i) { setMouseCursor (juce::MouseCursor::PointingHandCursor); }
     std::function<void()> onClick;
+    void setActive (bool a) { if (a != active) { active = a; repaint(); } }
     void paint (juce::Graphics& g) override
     {
         const auto& P = pal();
@@ -458,11 +463,18 @@ public:
         const auto c = b.getCentre();
         g.saveState();
         g.addTransform (juce::AffineTransform::scale (scale.x, scale.x, c.x, c.y));
-        const auto fill = P.containerHigh;
+        const auto fill = (active && icon == Icon::Keyboard) ? P.primaryContainer : P.containerHigh;
         g.setColour (fill);
         g.fillEllipse (b);
-        g.setColour (P.onSurface);
-        if (icon == Icon::Options)   // three sliders
+        g.setColour ((active && icon == Icon::Keyboard) ? P.onPrimaryContainer : P.onSurface);
+        if (icon == Icon::Keyboard)   // little piano
+        {
+            const auto r = juce::Rectangle<float> (c.x - 10.f, c.y - 6.5f, 20.f, 13.f);
+            g.drawRoundedRectangle (r, 2.5f, 1.6f);
+            for (int i = 1; i < 4; ++i) g.drawLine (r.getX() + 5.f * (float) i, r.getY() + 7.f, r.getX() + 5.f * (float) i, r.getBottom(), 1.2f);
+            for (int i = 1; i < 4; ++i) g.fillRect (r.getX() + 5.f * (float) i - 1.5f, r.getY() + 1.f, 3.f, 7.5f);
+        }
+        else if (icon == Icon::Options)   // three sliders
         {
             const float dots[3] = { -3.f, 4.f, -1.f };
             for (int i = 0; i < 3; ++i)
@@ -507,6 +519,7 @@ private:
         scale.step (tg, 300.f, 16.f, dt);
         return ! scale.settled (tg);
     }
+    bool active = false;
     Icon icon;
     bool hover = false, pressed = false;
     Spring scale { 1.f, 0.f };

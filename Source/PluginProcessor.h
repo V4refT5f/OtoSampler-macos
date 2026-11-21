@@ -62,6 +62,9 @@ public:
     // Largest allowed Start (0..1): the loop start point while Sustain Loop is on, otherwise 1 (message thread)
     float getStartLimit() const;
 
+    // notes played on the on-screen keyboard (also mirrors the notes arriving from the host)
+    juce::MidiKeyboardState keyboardState;
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:

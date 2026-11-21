@@ -4,6 +4,7 @@
 #include "UI/Widgets.h"
 #include "UI/WaveformView.h"
 #include "UI/Panels.h"
+#include "UI/VirtualKeyboard.h"
 
 class OtoEditor : public juce::AudioProcessorEditor,
                   public juce::FileDragAndDropTarget,
@@ -22,6 +23,8 @@ public:
 
 private:
     static constexpr int kBaseW = 1180, kBaseH = 580;
+    static constexpr int kKbH = 108, kKbGap = 8;          // virtual keyboard height and the gap above it
+    int baseH() const noexcept { return kBaseH + (kbVisible ? kKbH + kKbGap : 0); }
 
     // All widgets live on a canvas that is scaled to fit the window; extra height goes to the waveform,
     // extra width is shared by the cards.
@@ -50,6 +53,7 @@ private:
     void openFileChooser();
     void autoDetectRoot();
     void toggleTheme();
+    void toggleKeyboard();
     void togglePanel();
     void saveUi();
     juce::RangedAudioParameter& P (const char* id) { return *proc.apvts.getParameter (id); }
@@ -64,6 +68,8 @@ private:
     oto::ui::ThemeButton themeBtn;
     oto::ui::TonalButton autoRootBtn { "Auto Root" };
     oto::ui::ThemeButton optionsBtn { oto::ui::ThemeButton::Icon::Options };
+    oto::ui::ThemeButton kbBtn { oto::ui::ThemeButton::Icon::Keyboard };
+    oto::ui::VirtualKeyboard keyboard;
     oto::ui::OptionsPanel panel;
 
     oto::ui::Knob kRoot, kPitch, kFine, kVolume, kStart, kVel;
@@ -75,6 +81,7 @@ private:
     juce::Rectangle<int> cSample, cEnv, cPlay, cLoop, cVib, cGlide, cPre;
     int lastVersion = -1;
     int startW = kBaseW, startH = kBaseH;
+    bool kbVisible = false;   // the virtual keyboard is always hidden at start
     std::vector<float> playheadBuf;
     juce::String shownName;
     std::unique_ptr<juce::FileChooser> chooser;

@@ -104,7 +104,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     addFloat (ids::volume, "Volume", { -60.f, 12.f, 0.1f }, 0.f,
               [] (float v, int) { return v <= -59.9f ? String ("-inf dB") : String (v, 1) + " dB"; },
               [] (const String& t) { return t.containsIgnoreCase ("inf") ? -60.f : t.getFloatValue(); });
-    addFloat (ids::pitch, "Pitch", { -24.f, 24.f, 1.f }, 0.f,
+    addFloat (ids::pitch, "Pitch", { -48.f, 48.f, 1.f }, 0.f,
               [=] (float v, int) { return sign (v) + String (v, 0) + " st"; },
               [] (const String& t) { return t.getFloatValue(); });
     addFloat (ids::fine, "Fine", { -100.f, 100.f, 0.1f }, 0.f,

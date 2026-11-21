@@ -6,6 +6,7 @@ using namespace oto::ui;
 OtoEditor::OtoEditor (OtoProcessor& p)
     : AudioProcessorEditor (&p), proc (p),
       wave (P (ids::start), P (ids::loopStart), P (ids::loopEnd), P (ids::loopOn)),
+      keyboard (p.keyboardState),
       kRoot (P (ids::root), "Root Key"), kPitch (P (ids::pitch), "Pitch", true), kFine (P (ids::fine), "Fine", true),
       kVolume (P (ids::volume), "Volume"), kStart (P (ids::start), "Start"), kVel (P (ids::velocity), "Velocity"),
       kA (P (ids::attack), "Attack"), kD (P (ids::decay), "Decay"), kS (P (ids::sustain), "Sustain"), kR (P (ids::release), "Release"),
@@ -25,13 +26,16 @@ OtoEditor::OtoEditor (OtoProcessor& p)
         oto::ui::accentHue() = ui.hue;
         oto::ui::animationsEnabled() = ui.animations;
         startW = ui.width; startH = ui.height;
+        // the keyboard always starts hidden. A height saved by the previous version with the keyboard shown is converted
+        if (ui.keyboardKnown && ui.keyboard)
+            startH = juce::jmax (360, (int) std::lround ((double) startH * kBaseH / (double) (kBaseH + kKbH + kKbGap)));
     }
 
     addAndMakeVisible (canvas);
     canvas.onPaint = [this] (juce::Graphics& g) { paintCanvas (g); };
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
-             &wave, &openBtn, &optionsBtn, &themeBtn, &autoRootBtn,
+             &wave, &openBtn, &optionsBtn, &themeBtn, &kbBtn, &keyboard, &autoRootBtn,
              &kRoot, &kPitch, &kFine, &kVolume, &kStart, &kVel, &kA, &kD, &kS, &kR,
              &kXfade, &kVibRate, &kVibDepth, &kVibDelay, &kGlide, &kBend, &kDenoise, &kHp, &kLp,
              &swNormalize, &swFormant, &swSpeed, &swFlatten, &swLoop, &swMono, &swPre, &filterView })
@@ -48,6 +52,7 @@ OtoEditor::OtoEditor (OtoProcessor& p)
 
     kStart.limitValue = [this] (float v) { return juce::jmin (v, proc.getStartLimit()); };
     kPitch.shiftStep = 12.f;   // Shift + turn = one octave per step
+    kPitch.dragPixels = 480.f;  // range is -48..+48: keep 5 pixels per semitone
 
     openBtn.onClick = [this] { openFileChooser(); };
     autoRootBtn.onClick = [this] { autoDetectRoot(); };
@@ -57,6 +62,9 @@ OtoEditor::OtoEditor (OtoProcessor& p)
         wave.onPreview = [pp] (bool on) { if (on) pp->startPreview(); else pp->stopPreview(); };
     }
     themeBtn.onClick = [this] { toggleTheme(); };
+    kbBtn.onClick = [this] { toggleKeyboard(); };
+    kbBtn.setActive (kbVisible);
+    keyboard.setVisible (kbVisible);
 
     setLookAndFeel (&gripLnf);
     constrainer.setMinimumSize (720, 360);
@@ -78,7 +86,9 @@ OtoEditor::~OtoEditor()
 
 void OtoEditor::saveUi()
 {
-    oto::saveUiSettings ({ oto::ui::isDark(), oto::ui::accentHue(), oto::ui::animationsEnabled(), getWidth(), getHeight() });
+    // the height is stored as it would be without the keyboard, because the editor always starts without it
+    const int h = kbVisible ? (int) std::lround ((double) getHeight() * kBaseH / (double) baseH()) : getHeight();
+    oto::saveUiSettings ({ oto::ui::isDark(), oto::ui::accentHue(), oto::ui::animationsEnabled(), getWidth(), h, false, true });
 }
 
 void OtoEditor::togglePanel()
@@ -102,6 +112,11 @@ void OtoEditor::timerCallback()
     proc.getPlayheads (playheadBuf);
     wave.setPlayheads (playheadBuf);
 
+    {
+        auto& rp = P (ids::root);
+        keyboard.setRoot ((int) std::lround (rp.convertFrom0to1 (rp.getValue())));
+    }
+
     const int v = proc.getSampleVersion();
     if (v != lastVersion)
     {
@@ -110,6 +125,19 @@ void OtoEditor::timerCallback()
         shownName = proc.getSampleName();
         canvas.repaint (0, 0, canvas.getWidth(), 64);
     }
+}
+
+void OtoEditor::toggleKeyboard()
+{
+    const int oldBase = baseH();
+    kbVisible = ! kbVisible;
+    kbBtn.setActive (kbVisible);
+    keyboard.setVisible (kbVisible);
+    saveUi();
+    // keep the scale of the cards: grow / shrink the window by the height of the keyboard
+    const int newH = juce::jlimit (360, 2160, (int) std::lround ((double) getHeight() * baseH() / (double) oldBase));
+    if (newH != getHeight()) setSize (getWidth(), newH);
+    else resized();
 }
 
 void OtoEditor::toggleTheme()
@@ -147,7 +175,7 @@ void OtoEditor::filesDropped (const juce::StringArray& files, int, int)
 void OtoEditor::resized()
 {
     const float W = (float) getWidth(), H = (float) getHeight();
-    const float sc = juce::jmax (0.1f, juce::jmin (W / (float) kBaseW, H / (float) kBaseH));
+    const float sc = juce::jmax (0.1f, juce::jmin (W / (float) kBaseW, H / (float) baseH()));
     const int vw = (int) std::ceil (W / sc), vh = (int) std::ceil (H / sc);
     canvas.setTransform (juce::AffineTransform::scale (sc));
     canvas.setBounds (0, 0, vw, vh);
@@ -170,10 +198,11 @@ void OtoEditor::autoDetectRoot()
 void OtoEditor::layoutCanvas (int W, int H)
 {
     const int M = 16, G = 8;
-    const int extra = juce::jmax (0, H - kBaseH);
+    const int extra = juce::jmax (0, H - baseH());
     themeBtn.setBounds (W - M - 44, 12, 44, 44);
     optionsBtn.setBounds (W - M - 44 - 44, 12, 44, 44);
-    openBtn.setBounds (W - M - 44 - 44 - 8 - 132, 12, 132, 44);
+    kbBtn.setBounds (W - M - 44 * 3, 12, 44, 44);
+    openBtn.setBounds (W - M - 44 * 3 - 8 - 132, 12, 132, 44);
     wave.setBounds (M, 64, W - 2 * M, 176 + extra);
 
     const int rowA = 248 + extra, rowB = 408 + extra, rowH = 152;
@@ -203,6 +232,8 @@ void OtoEditor::layoutCanvas (int W, int H)
         int i = 0;
         for (auto* k : ks) { k->setTopLeftPosition (card.getX() + 12 + i * cell + (cell - kw) / 2, card.getY() + 38); ++i; }
     };
+    keyboard.setBounds (M, rowB + rowH + kKbGap, avail, kKbH);
+
     placeKnobs (cSample, { &kRoot, &kPitch, &kFine, &kVolume, &kStart, &kVel });
     placeKnobs (cEnv, { &kA, &kD, &kS, &kR });
     placeKnobs (cLoop, { &kXfade });
