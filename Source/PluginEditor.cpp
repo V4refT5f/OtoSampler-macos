@@ -151,11 +151,13 @@ void OtoEditor::toggleTheme()
 void OtoEditor::openFileChooser()
 {
     chooser = std::make_unique<juce::FileChooser> ("Select a sample", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+    juce::Component::SafePointer<OtoEditor> safe (this);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                          [this] (const juce::FileChooser& fc)
+                          [safe] (const juce::FileChooser& fc)
                           {
+                              if (safe == nullptr) return;
                               const auto f = fc.getResult();
-                              if (f.existsAsFile()) proc.loadSampleFromFile (f);
+                              if (f.existsAsFile()) safe->proc.loadSampleFromFile (f);
                           });
 }
 

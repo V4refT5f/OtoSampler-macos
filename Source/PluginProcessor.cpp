@@ -36,6 +36,9 @@ void OtoProcessor::parameterChanged (const juce::String&, float) { filterDirty =
 
 bool OtoProcessor::isBusesLayoutSupported (const BusesLayout& l) const
 {
+    if (! l.getMainInputChannelSet().isDisabled())
+        return false;
+
     return l.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
         || l.getMainOutputChannelSet() == juce::AudioChannelSet::mono();
 }
