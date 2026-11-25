@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #include "Voice.h"
 #include "Interp.h"
 
@@ -5,13 +6,9 @@ namespace oto
 {
 namespace
 {
-// The LPC residual engine is used for large pitch-up shifts, where plain PSOLA breaks down. For small shifts and for
-// pitch-down the (window-corrected) PSOLA path is at least as good, and for very high voices (above ~300 Hz) the LPC
-// envelope cannot follow the narrow resonances, so that path is used there as well.
-// The choice is made once per note, so vibrato / glide / bend can never switch engines in the middle of a note.
-constexpr float kLpMinSemis = 6.0f;
-constexpr double kLpMaxF0Period = 0.0033;     // seconds (= 303 Hz)
+inline double wrap1 (double v) noexcept { return v - std::floor (v + 0.5); }
 }
+
 void Voice::start (const SampleData& d, int midiNote, float vel, float glideFromPitch,
                    const VoiceParams& p, std::uint64_t serial) noexcept
 {
@@ -23,79 +20,45 @@ void Voice::start (const SampleData& d, int midiNote, float vel, float glideFrom
     // Start never goes beyond the loop start point while Sustain Loop is on
     const float startNorm = std::min (std::clamp (p.startNorm, 0.f, 1.f),
                                       maxStartNorm (d.source->map, N, p.loopOn, p.loopStartNorm, p.loopEndNorm));
-    pos = a = (double) startNorm * std::max (0, N - 1);
+    a = (double) startNorm * std::max (0, N - 1);
     glideOffset = (p.glideMs > 0.5f && glideFromPitch == glideFromPitch) ? glideFromPitch - (float) midiNote : 0.f;
-    lfoPhase = 0.0; vibTime = 0.0; initDone = false;
-    for (auto& g : grains) g.active = false;
-    firstGrain = true; sourceDone = false; spawnCountdown = 0.0; loopArmed = false;
-    engInited = false; engDone = false;
-    {
-        const float semis0 = (float) (note_ - p.rootKey) + p.coarseSemis;
-        lpChosen = d.hasLpc() && semis0 >= kLpMinSemis
-                && (double) d.source->map.refPeriod >= kLpMaxF0Period * d.source->sampleRate;
-    }
+    lfoPhase = 0.0; vibTime = 0.0; initDone = false; loopArmed = false; rPrev = 1.f;
+
+    // the output fundamental starts in phase with the source, so that an unshifted note rebuilds the original waveform
+    const auto& M = d.source->model;
+    if (M.valid()) { const double t = M.thetaAt (a); theta = t - std::floor (t); }
+    else theta = 0.0;
+
     adsr.setSampleRate (sr);
     adsr.setParams (p.attackMs, p.decayMs, p.sustain, p.releaseMs);
     adsr.kill();
     adsr.noteOn();
 }
 
-void Voice::spawnGrain (const SampleData& d, const VoiceParams& p, double r, double k, const LoopInfo& L) noexcept
+void Voice::evalAt (const AdditiveModel& M, const HarmonicChannel& hc, double pos, const EvalCfg& cfg,
+                    const LoopInfo& L, float wn, PartialSet& out) noexcept
 {
-    const PitchMap& m = d.source->map;
-    const int mi = m.nearest (a);
-    const bool voiced = mi >= 0 && m.voiced[(size_t) mi];
-    const double Tin = mi >= 0 ? (double) m.periods[(size_t) mi] : (double) m.defaultPeriod;
-    const double c1 = voiced ? (double) m.marks[(size_t) mi] : a;
-
-    // unvoiced parts (consonants/breath) are not pitch-shifted -> no buzz
-    const double rEff = voiced ? r : 1.0;
-    const double g = (p.formantHold ? 1.0 : r) * k;                 // source samples per output sample
-    const double Tbase = (p.flatten && voiced) ? (double) m.refPeriod : Tin;   // flatten: constant output period
-    // output hop (host samples); the lower limit allows output pitches up to ~10 kHz (it used to stop at ~1.8 kHz)
-    const double Tout = std::clamp (Tbase / (k * rEff), 4.0, 16000.0);
-    // Formant Hold: the grain always spans ~2 source periods. Widening it to the output hop (pitch down) would let the
-    // window contain several source periods, which rebuilds the ORIGINAL pitch instead of lowering it.
-    // (limited to 8 hops so that very high pitches never need more grains than there are slots)
-    const double half = p.formantHold ? std::min (Tin / g, 8.0 * Tout) : std::max (Tout, Tin / g);
-    const int len = std::max (16, (int) std::ceil (2.0 * half));
-
-    Grain* slot = nullptr;
-    for (auto& gr : grains) if (! gr.active) { slot = &gr; break; }
-    if (slot != nullptr)
+    if (wn > 0.f)
     {
-        slot->active = true; slot->c1 = c1; slot->g = g; slot->len = len;
-        slot->age = firstGrain ? len / 2 : 0;       // first grain starts at its peak (no fade-in of the attack)
-        // spawnCountdown is <= 0 here: the grain should have started that many (sub-)samples ago. Keeping the fraction
-        // places every grain with sub-sample accuracy instead of on the integer sample grid (pitch jitter at high pitch).
-        slot->frac = firstGrain ? 0.0 : std::clamp (-spawnCountdown, 0.0, 1.0);
-        slot->gain = (float) std::min (1.0, Tout / half);
-        slot->w2 = 0.f; slot->shift = 0.0;
-        slot->wA = slot->wB = 0.f; slot->offA = slot->offB = 0.0;
-        if ((p.formantHold || p.flatten) && p.denoise > 0.f && voiced)
-        {
-            // Denoise: average with the previous / next pitch period (aperiodic noise cancels, harmonics stay)
-            const float wn = std::clamp (p.denoise, 0.f, 1.f) * (1.f / 3.f);
-            const int n = (int) m.marks.size();
-            if (mi > 0 && m.voiced[(size_t) mi - 1])
-            {
-                const double off = (double) m.marks[(size_t) mi - 1] - c1;
-                if (off < -0.5 * Tin && off > -1.6 * Tin) { slot->offA = off; slot->wA = wn; }
-            }
-            if (mi + 1 < n && m.voiced[(size_t) mi + 1])
-            {
-                const double off = (double) m.marks[(size_t) mi + 1] - c1;
-                if (off > 0.5 * Tin && off < 1.6 * Tin) { slot->offB = off; slot->wB = wn; }
-            }
-        }
-        if (L.active && a >= L.e - L.xf)
-        {
-            slot->w2 = crossW2 ((a - (L.e - L.xf)) / L.xf);
-            slot->shift = L.len;
-        }
+        // Denoise: average with the previous / next pitch period (aperiodic parts cancel, the partials stay)
+        const double T = 1.0 / std::max (1.0e-5, (double) M.f0At (pos));
+        const double th = M.thetaAt (pos);
+        const double pa = pos - T, pb = pos + T;
+        evalPartials (M, hc, pos, cfg, scratch, tapC);
+        evalPartials (M, hc, pa, cfg, scratch, tapA);
+        evalPartials (M, hc, pb, cfg, scratch, tapB);
+        averageSets (out, tapC, tapA, wrap1 (th - M.thetaAt (pa)), wn, tapB, wrap1 (th - M.thetaAt (pb)), wn);
     }
-    if (firstGrain) { spawnCountdown = 0.0; firstGrain = false; }
-    else spawnCountdown += Tout;
+    else evalPartials (M, hc, pos, cfg, scratch, out);
+
+    // loop cross-fade: blend with the same material one loop length earlier (phase aligned)
+    if (L.active && pos >= L.e - L.xf)
+    {
+        const float w2 = crossW2 ((pos - (L.e - L.xf)) / L.xf);
+        const double pos2 = pos - L.len;
+        evalPartials (M, hc, pos2, cfg, scratch, tapA);
+        blendSets (out, tapA, w2, wrap1 (M.thetaAt (pos) - M.thetaAt (pos2)));
+    }
 }
 
 void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
@@ -103,10 +66,11 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
 {
     if (! active || d.numChannels() == 0) return;
     const int N = d.numSamples();
-    if (N < 4) { kill(); return; }
+    if (N < 4 || ! d.hasAdditive()) { kill(); return; }
 
-    const float* c0 = d.channels[0].data();
-    const float* c1 = d.numChannels() > 1 ? d.channels[1].data() : c0;
+    const AdditiveModel& M = d.source->model;
+    const AdditiveData& D = *d.add;
+    const int nch = (int) std::min<size_t> (2, D.ch.size());
     const double srcSr = d.source->sampleRate;
     const double k = srcSr / sr;
 
@@ -129,24 +93,10 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
         }
     }
 
-    const bool useLp = lpChosen && p.formantHold && d.hasLpc();
-    const bool useGrains = p.formantHold || p.speedHold || p.flatten;
-    usingGrains = useGrains;
-    EngineParams ep;
-    ep.speedHold = p.speedHold; ep.flatten = p.flatten; ep.denoise = p.denoise; ep.loop = L;
-    if (useLp && ! engInited)
-    {
-        eng.start (usingGrainsPrev ? a : pos);
-        engInited = true; engDone = false; engFrac = 0.0; engTail = 0;
-        for (int q = 0; q < 4; ++q) ringL[q] = ringR[q] = 0.f;
-    }
-    else if (! useLp && engInited)
-    {
-        a = pos = eng.position();
-        engInited = false; firstGrain = true; spawnCountdown = 0.0; sourceDone = false;
-        for (auto& g : grains) g.active = false;
-    }
-    usingGrainsPrev = useGrains;
+    const float dn = (p.formantHold || p.flatten) ? std::clamp (p.denoise, 0.f, 1.f) : 0.f;
+    const float wn = dn * (1.f / 3.f);
+    const float residualGain = 1.f - dn;
+
     const float bendCoef = std::exp (-1.f / (0.005f * (float) sr));
     const float gainCoef = std::exp (-1.f / (0.010f * (float) sr));
     const float glideCoef = p.glideMs > 0.5f ? std::exp (-6.9f / (p.glideMs * 0.001f * (float) sr)) : 0.f;
@@ -154,117 +104,163 @@ void Voice::render (const SampleData& d, const VoiceParams& p, float bendTarget,
     const float vibDepth = p.vibDepthCents * 0.01f;
     const double vibDelay = (double) p.vibDelayMs * 0.001 * sr, vibFade = 0.1 * sr;
 
-    for (int i = 0; i < n; ++i)
+    int done = 0;
+    while (done < n && active)
     {
-        bendCur = bendTarget + (bendCur - bendTarget) * bendCoef;
-        gainSm  = targetGain + (gainSm - targetGain) * gainCoef;
-        glideOffset *= glideCoef;
-        if (std::abs (glideOffset) < 1e-4f) glideOffset = 0.f;
+        const int want = std::min (kChunk, n - done);
 
-        float vib = 0.f;
-        if (vibDepth > 0.f)
+        // ---- per-sample scalar parameters: pitch ratio, envelope, gain ----
+        float amp[kChunk];
+        double sumR = 0.0;
+        int len = 0;
+        bool ended = false;
+        for (int i = 0; i < want; ++i)
         {
-            const double onset = std::clamp ((vibTime - vibDelay) / vibFade, 0.0, 1.0);
-            vib = vibDepth * (float) onset * (float) std::sin (2.0 * kPi * lfoPhase);
-            lfoPhase += vibInc; if (lfoPhase >= 1.0) lfoPhase -= std::floor (lfoPhase);
-        }
-        vibTime += 1.0;
+            bendCur = bendTarget + (bendCur - bendTarget) * bendCoef;
+            gainSm  = targetGain + (gainSm - targetGain) * gainCoef;
+            glideOffset *= glideCoef;
+            if (std::abs (glideOffset) < 1e-4f) glideOffset = 0.f;
 
-        const float semis = (float) (note_ - p.rootKey) + p.coarseSemis + bendCur + vib + glideOffset;
-        const double r = std::exp2 ((double) std::clamp (semis, -72.f, 72.f) / 12.0);
-
-        const float env = adsr.next();
-        if (! adsr.isActive()) { active = false; break; }
-
-        float l = 0.f, rr = 0.f;
-
-        if (useLp)
-        {
-            // ---------- formant-preserving engine (LPC residual PSOLA) ----------
-            engFrac += k;
-            while (engFrac >= 1.0)
+            float vib = 0.f;
+            if (vibDepth > 0.f)
             {
-                engFrac -= 1.0;
-                float nl = 0.f, nr = 0.f;
-                if (! engDone && ! eng.step (d, ep, r, nl, nr)) engDone = true;
-                ringL[0] = ringL[1]; ringL[1] = ringL[2]; ringL[2] = ringL[3]; ringL[3] = nl;
-                ringR[0] = ringR[1]; ringR[1] = ringR[2]; ringR[2] = ringR[3]; ringR[3] = nr;
+                const double onset = std::clamp ((vibTime - vibDelay) / vibFade, 0.0, 1.0);
+                vib = vibDepth * (float) onset * (float) std::sin (2.0 * kPi * lfoPhase);
+                lfoPhase += vibInc; if (lfoPhase >= 1.0) lfoPhase -= std::floor (lfoPhase);
             }
-            const float ff = (float) engFrac;
-            l  = hermite (ringL[0], ringL[1], ringL[2], ringL[3], ff);
-            rr = hermite (ringR[0], ringR[1], ringR[2], ringR[3], ff);
-            if (engDone && ++engTail > 8) { kill(); break; }
+            vibTime += 1.0;
+
+            const float semis = (float) (note_ - p.rootKey) + p.coarseSemis + bendCur + vib + glideOffset;
+            const double r = std::exp2 ((double) std::clamp (semis, -72.f, 72.f) / 12.0);
+
+            const float env = adsr.next();
+            if (! adsr.isActive()) { ended = true; break; }
+            amp[i] = env * gainSm;
+            sumR += r;
+            ++len;
         }
-        else if (! useGrains)
-        {
-            // ---------- plain resampling (varispeed) ----------
-            // the loop only engages once the read position has been before the loop end
-            // (starting behind the loop end plays straight through, no jump back)
-            if (L.active && ! loopArmed && pos < L.e) loopArmed = true;
-            const bool lp = L.active && loopArmed;
-            if (lp) while (pos >= L.e) pos -= L.len;
-            if (pos >= N) { kill(); break; }
-            l = readSample (c0, N, pos); rr = readSample (c1, N, pos);
-            if (lp && pos >= L.e - L.xf)
-            {
-                const float w2 = crossW2 ((pos - (L.e - L.xf)) / L.xf);
-                const double p2 = pos - L.len;
-                l  = l  * (1.f - w2) + readSample (c0, N, p2) * w2;
-                rr = rr * (1.f - w2) + readSample (c1, N, p2) * w2;
-            }
-            pos += r * k;
-        }
+        if (len == 0) { active = false; break; }
+        const double rAvg = sumR / (double) len;
+        rPrev = (float) rAvg;
+
+        // ---- read position ----
+        if (L.active && ! loopArmed && a < L.e) loopArmed = true;
+        const bool lp = L.active && loopArmed;
+        if (! lp && a >= (double) N) { active = false; break; }
+        LoopInfo Lc = L; Lc.active = lp;
+
+        const double da = k * (p.speedHold ? (double) len : sumR);      // source samples covered by this block
+        const double aEnd = a + da;
+        const double step = da / (double) len;
+
+        // ---- pitch: phase advance of the output fundamental ----
+        // Exact phase increment of the source along the read path (no integration drift), scaled by the pitch ratio when
+        // the read position does not follow the pitch (Speed Hold). Pitch Flatten uses the constant median pitch instead.
+        double dTheta;
+        if (p.flatten) dTheta = (double) M.refF0 * k * sumR;
         else
         {
-            // ---------- grain (PSOLA) engine: speed and/or formant preserved ----------
-            if (L.active && ! loopArmed && a < L.e) loopArmed = true;
-            const bool lp = L.active && loopArmed;
-            if (lp) while (a >= L.e) a -= L.len;
-            if (! sourceDone && a >= N) sourceDone = true;
-            spawnCountdown -= 1.0;
-            if (! sourceDone && spawnCountdown <= 0.0)
-            {
-                LoopInfo Lc = L; Lc.active = lp;
-                spawnGrain (d, p, r, k, Lc);
-            }
+            const double dth = M.thetaAt (aEnd) - M.thetaAt (a);
+            dTheta = p.speedHold ? dth * rAvg : dth;
+        }
+        const double fOut = dTheta / (double) len;                      // cycles per output sample
+        const int hNyq = (int) std::min (1000.0, std::floor (0.5 / std::max (1.0e-6, fOut)));
 
-            int living = 0;
-            for (auto& gr : grains)
+        // output pitch / source pitch at both ends of the block (frequency in Hz = cycles per sample * sample rate)
+        const double rhoS0 = fOut / std::max (1.0e-6, (double) M.f0At (a) * k);
+        const double rhoE0 = fOut / std::max (1.0e-6, (double) M.f0At (aEnd) * k);
+
+        // Pitch Flatten must never move the formants: the envelope is always read at the frequency that matches the
+        // (flattened) pitch. Without Formant Hold only the transposition by the note / Pitch knob moves the formants,
+        // so that part (the average pitch ratio of the block) is taken out of the ratio used to read the envelope.
+        const bool envPath = p.formantHold || p.flatten;
+        const double envDiv = p.formantHold ? 1.0 : std::max (1.0e-3, rAvg);
+        const double rhoS = std::clamp (rhoS0 / envDiv, 1.0 / 64.0, 64.0);
+        const double rhoE = std::clamp (rhoE0 / envDiv, 1.0 / 64.0, 64.0);
+
+        EvalCfg cs, ce;
+        cs.formantHold = ce.formantHold = envPath;
+        int nOut;
+        if (envPath)
+        {
+            cs.rho = (float) rhoS; ce.rho = (float) rhoE;
+            cs.ampScale = std::sqrt (std::clamp (cs.rho, 0.25f, 4.f));   // keeps the level when fewer / more partials share the envelope
+            ce.ampScale = std::sqrt (std::clamp (ce.rho, 0.25f, 4.f));
+            nOut = std::min ({ kMaxOutPartials, hNyq, (int) ((double) M.stride / std::min (rhoS, rhoE)) });
+        }
+        else nOut = std::min ({ M.stride, hNyq });
+        nOut = std::max (0, nOut);
+        cs.n = ce.n = nOut;
+
+        const double th0 = theta - std::floor (theta);
+        float harm[2][kChunk];
+        for (int c = 0; c < nch; ++c)
+        {
+            for (int i = 0; i < len; ++i) harm[c][i] = 0.f;
+            if (nOut == 0) continue;
+            const HarmonicChannel& hc = D.ch[(size_t) c];
+            evalAt (M, hc, a, cs, Lc, wn, setA);
+            evalAt (M, hc, aEnd, ce, Lc, wn, setB);
+
+            for (int j = 0; j < nOut; ++j)
             {
-                if (! gr.active) continue;
-                ++living;
-                const double ag = (double) gr.age + gr.frac;
-                const double sp = gr.c1 + (ag + 0.5 - 0.5 * gr.len) * gr.g;
-                const float w = hannAt ((float) ((ag + 0.5) / (double) gr.len)) * gr.gain;
-                auto tap = [&] (double q, float& tl, float& tr)
+                const double h = (double) (j + 1);
+                const double fh = h * fOut;
+                if (fh > 0.45)                                           // fade out towards Nyquist, no aliasing
                 {
-                    tl = readSample (c0, N, q); tr = readSample (c1, N, q);
-                    if (gr.w2 > 0.f)
-                    {
-                        tl = tl * (1.f - gr.w2) + readSample (c0, N, q - gr.shift) * gr.w2;
-                        tr = tr * (1.f - gr.w2) + readSample (c1, N, q - gr.shift) * gr.w2;
-                    }
-                };
-                float sl, sR;
-                tap (sp, sl, sR);
-                if (gr.wA > 0.f || gr.wB > 0.f)
-                {
-                    const float wC = 1.f - gr.wA - gr.wB;
-                    sl *= wC; sR *= wC;
-                    float tl, tr;
-                    if (gr.wA > 0.f) { tap (sp + gr.offA, tl, tr); sl += tl * gr.wA; sR += tr * gr.wA; }
-                    if (gr.wB > 0.f) { tap (sp + gr.offB, tl, tr); sl += tl * gr.wB; sR += tr * gr.wB; }
+                    const float g = (float) std::clamp ((0.5 - fh) / 0.05, 0.0, 1.0);
+                    setA.amp[j] *= g; setB.amp[j] *= g;
                 }
-                l += sl * w; rr += sR * w;
-                if (++gr.age >= gr.len) gr.active = false;
+                double ps = h * th0 + (double) setA.ph[j];
+                ps -= std::floor (ps);
+                pStart[j] = (float) ps;
+                pInc[j] = (float) ((h * dTheta + (double) wrap1 ((double) setB.ph[j] - (double) setA.ph[j])) / (double) len);
             }
-            if (sourceDone && living == 0) { kill(); break; }
-            a += p.speedHold ? k : r * k;
+            float mx = 0.f;
+            for (int j = 0; j < nOut; ++j) mx = std::max ({ mx, setA.amp[j], setB.amp[j] });
+            bankAdd (setA.amp, setB.amp, pStart, pInc, nOut, len, harm[c], 1.0e-4f * mx);   // partials 80 dB below the strongest are skipped
         }
 
-        const float amp = env * gainSm;
-        if (outR != nullptr) { outL[i] += l * amp; outR[i] += rr * amp; }
-        else outL[i] += 0.5f * (l + rr) * amp;
+        // ---- residual (consonants, breath, anything the partials do not explain): read at the source speed ----
+        const int nres = (int) std::min<size_t> (2, D.residual.size());
+        for (int i = 0; i < len; ++i)
+        {
+            const double pos = a + step * (double) i;
+            float res[2] = { 0.f, 0.f };
+            for (int c = 0; c < nres; ++c)
+            {
+                const float* rd = D.residual[(size_t) c].data();
+                float v = readSample (rd, N, pos);
+                if (lp && pos >= L.e - L.xf)
+                {
+                    const float w2 = crossW2 ((pos - (L.e - L.xf)) / L.xf);
+                    v = v * std::sqrt (1.f - w2) + readSample (rd, N, pos - L.len) * std::sqrt (w2);   // equal power for noise
+                }
+                res[c] = v * residualGain;
+            }
+            if (nres == 1) res[1] = res[0];
+            float l = (nch > 0 ? harm[0][i] : 0.f) + res[0];
+            float rr = (nch > 1 ? harm[1][i] : (nch > 0 ? harm[0][i] : 0.f)) + res[1];
+            l *= amp[i]; rr *= amp[i];
+            if (outR != nullptr) { outL[done + i] += l; outR[done + i] += rr; }
+            else outL[done + i] += 0.5f * (l + rr);
+        }
+
+        // ---- advance ----
+        double th1 = th0 + dTheta;
+        a = aEnd;
+        while (lp && a >= L.e)
+        {
+            // wrap: the phase of the output fundamental is shifted by the same amount the source phase jumps,
+            // so the waveform stays continuous across the loop point
+            const double before = a;
+            a -= L.len;
+            th1 -= wrap1 (M.thetaAt (before) - M.thetaAt (a));
+        }
+        theta = th1 - std::floor (th1);
+        done += len;
+        if (! lp && a >= (double) N) { active = false; break; }
+        if (ended) { active = false; break; }
     }
 }
 }

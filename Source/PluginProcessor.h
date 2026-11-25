@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include "Common.h"
 #include "Params.h"
-#include "Dsp/Biquad.h"
-#include "Dsp/PitchAnalyzer.h"
-#include "Dsp/Lpc.h"
-#include "Dsp/Voice.h"
+#include "OscUnit.h"
 
 class OtoProcessor : public juce::AudioProcessor,
-                     private juce::Timer,
-                     private juce::AudioProcessorValueTreeState::Listener
+                     private juce::Timer
 {
 public:
     OtoProcessor();
@@ -36,31 +33,20 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
-    // ---- sample handling (message thread) ----
-    void loadSampleFromFile (const juce::File&);
-    std::shared_ptr<const oto::SampleData> getSampleData() const;
-    juce::String getSampleName() const;
-    int getSampleVersion() const noexcept { return sampleVersion.load(); }
+    // ---- oscillators ----
+    oto::OscUnit& osc (int i) { return *units[(size_t) juce::jlimit (0, oto::kMaxOsc - 1, i)]; }
+    const oto::OscUnit& osc (int i) const { return *units[(size_t) juce::jlimit (0, oto::kMaxOsc - 1, i)]; }
+    int getOscCount() const noexcept { return juce::jlimit (1, oto::kMaxOsc, (int) std::lround (pOscCount->load())); }
 
-    // MIDI note nearest to the median pitch of the voiced part of the loaded sample, or -1 when there is no sample
-    // or no clear pitch (message thread)
-    int detectRootNote() const;
-
-    static constexpr int kNumVoices = 16;
-
-    // normalised read positions (0..1) of all sounding voices, for the waveform playhead
-    void getPlayheads (std::vector<float>& out) const
-    {
-        out.clear();
-        for (auto& p : playheads) { const float v = p.load (std::memory_order_relaxed); if (v >= 0.f) out.push_back (v); }
-    }
-
-    // audition the sample (called from the UI thread, consumed by the audio thread)
-    void startPreview() noexcept { ++previewOn; }
-    void stopPreview() noexcept  { ++previewOff; }
-
-    // Largest allowed Start (0..1): the loop start point while Sustain Loop is on, otherwise 1 (message thread)
-    float getStartLimit() const;
+    // All functions below run on the message thread.
+    // Add a new OSC at the end (copyFrom >= 0: start as a copy of that OSC). Returns its index, or -1 when full.
+    int  addOsc (int copyFrom = -1);
+    // Remove OSC "index"; the OSCs after it move up. The last remaining OSC cannot be removed.
+    bool removeOsc (int index);
+    // Copy the settings and the sample of an OSC into the clipboard / paste them into another OSC
+    void copyOsc (int index);
+    bool pasteOsc (int index);
+    bool hasClipboard() const noexcept { return clip.valid; }
 
     // notes played on the on-screen keyboard (also mirrors the notes arriving from the host)
     juce::MidiKeyboardState keyboardState;
@@ -68,55 +54,24 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
-    void enforceStartLimit();
+    struct OscClip
+    {
+        bool valid = false;
+        std::vector<float> norm;          // normalised value of every parameter in oto::kOscParamIds
+        oto::OscUnit::SampleRef sample;
+    };
+
+    OscClip makeClip (int index) const;
+    void applyClip (int index, const OscClip&);
+    void resetOsc (int index);
+    void setOscCount (int n);
     void timerCallback() override;
-    void parameterChanged (const juce::String&, float) override;
 
-    void loadSampleFromMemory (std::shared_ptr<juce::MemoryBlock>, juce::String path, juce::String name);
-    static std::shared_ptr<oto::SampleSource> decode (const juce::MemoryBlock&, const juce::String& name);
-    static std::shared_ptr<oto::SampleData> buildSampleData (std::shared_ptr<const oto::SampleSource>, const oto::FilterSettings&);
-    oto::FilterSettings readFilterSettings() const;
-    void publish (std::shared_ptr<const oto::SampleData>, bool newSource);
-    void rebuildFiltered();
-
-    void readParams();
-    void handleMidi (const juce::MidiMessage&, const oto::SampleData*);
-    void noteOn (int note, float vel, const oto::SampleData*);
-    void noteOff (int note);
-    void renderVoices (juce::AudioBuffer<float>&, const oto::SampleData*, int start, int num);
-
-    std::array<oto::Voice, kNumVoices> voices;
-    std::array<std::atomic<float>, kNumVoices> playheads;
-    oto::VoiceParams vp;
-    double hostSr = 44100.0;
-    std::uint64_t serialCounter = 0;
-    int lastVoice = -1, lastNote = 60;
-    bool hasLast = false, pedalDown = false;
-    float bendNorm = 0.f, bendRangeSt = 2.f;
-    bool monoMode = false;
-    int seenSourceVersion = -1;
-    std::atomic<unsigned> previewOn { 0 }, previewOff { 0 };
-    unsigned seenPreviewOn = 0, seenPreviewOff = 0;
-
-    // parameter pointers
-    std::atomic<float> *pVolume, *pPitch, *pFine, *pRoot, *pNormalize, *pStart, *pVelocity,
-        *pLoopOn, *pLoopStart, *pLoopEnd, *pLoopXfade, *pFormant, *pSpeed, *pFlatten, *pDenoise,
-        *pAttack, *pDecay, *pSustain, *pRelease, *pVibRate, *pVibDepth, *pVibDelay,
-        *pGlide, *pMono, *pBend, *pPreOn, *pPreHp, *pPreLp;
-
-    // published sample (audio thread reads the raw pointer only)
-    mutable juce::CriticalSection lock;
-    std::shared_ptr<const oto::SampleData> owned;
-    std::shared_ptr<const oto::SampleSource> currentSource;
-    std::shared_ptr<juce::MemoryBlock> rawFile;
-    juce::String samplePath, sampleName;
-    struct Retired { std::shared_ptr<const oto::SampleData> d; juce::uint32 t; };
-    std::vector<Retired> graveyard;
-    std::atomic<const oto::SampleData*> audioData { nullptr };
-    std::atomic<int> sampleVersion { 0 }, sourceVersion { 0 };
-    std::atomic<bool> filterDirty { false }, jobRunning { false };
+    std::atomic<float>* pOscCount = nullptr;
+    OscClip clip;
 
     juce::ThreadPool pool { 1 };
+    std::array<std::unique_ptr<oto::OscUnit>, oto::kMaxOsc> units;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OtoProcessor)
 };

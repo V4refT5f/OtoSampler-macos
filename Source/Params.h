@@ -1,5 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include "Common.h"
+
+namespace oto
+{
+// Number of oscillators (sample slots). OSC1 keeps the original parameter ids (old projects load unchanged),
+// OSC2 and OSC3 use the same ids with the suffix _2 / _3.
+inline constexpr int kMaxOsc = 3;
+
+inline juce::String oscParamId (const char* base, int osc)
+{
+    return osc <= 0 ? juce::String (base) : juce::String (base) + "_" + juce::String (osc + 1);
+}
+}
 
 namespace oto::ids
 {
@@ -37,6 +50,21 @@ inline constexpr const char* bendRange = "bendRange";
 inline constexpr const char* preOn = "preOn";
 inline constexpr const char* preHp = "preHp";
 inline constexpr const char* preLp = "preLp";
+
+inline constexpr const char* oscCount = "oscCount";   // global: how many OSCs are in use (1..kMaxOsc)
+}
+
+namespace oto
+{
+// Every per-OSC parameter (used by copy / paste / reset)
+inline const std::array<const char*, 28> kOscParamIds = {
+    ids::volume, ids::pitch, ids::fine, ids::root, ids::normalize, ids::start, ids::velocity,
+    ids::loopOn, ids::loopStart, ids::loopEnd, ids::loopXfade,
+    ids::formantHold, ids::speedHold, ids::denoise, ids::flatten,
+    ids::attack, ids::decay, ids::sustain, ids::release,
+    ids::vibRate, ids::vibDepth, ids::vibDelay,
+    ids::glide, ids::mono, ids::bendRange,
+    ids::preOn, ids::preHp, ids::preLp };
 }
 
 namespace oto
@@ -74,16 +102,19 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     using ToText = std::function<String (float, int)>;
     using FromText = std::function<float (const String&)>;
 
+    int osc = 0;   // OSC being added (0..kMaxOsc-1), changed by the loop below
+    auto oscName = [&] (const char* name) { return String ("OSC") + String (osc + 1) + " " + name; };
+
     auto addFloat = [&] (const char* id, const char* name, NormalisableRange<float> r, float def,
                          ToText toText, FromText fromText, float centre = -1.f)
     {
         if (centre > 0.f) r.setSkewForCentre (centre);
-        layout.add (std::make_unique<AudioParameterFloat> (PID { id, 1 }, name, r, def,
+        layout.add (std::make_unique<AudioParameterFloat> (PID { oscParamId (id, osc), 1 }, oscName (name), r, def,
                     AudioParameterFloatAttributes().withStringFromValueFunction (toText).withValueFromStringFunction (fromText)));
     };
     auto addBool = [&] (const char* id, const char* name, bool def)
     {
-        layout.add (std::make_unique<AudioParameterBool> (PID { id, 1 }, name, def));
+        layout.add (std::make_unique<AudioParameterBool> (PID { oscParamId (id, osc), 1 }, oscName (name), def));
     };
 
     auto sign = [] (float v) { return v > 0.f ? String ("+") : String(); };
@@ -100,66 +131,74 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     auto fmtMsT = [=] (float v, int) { return fmtMs (v); };
     auto parseMsT = [=] (const String& t) { return parseMs (t); };
 
-    // ---- sample ----
-    addFloat (ids::volume, "Volume", { -60.f, 12.f, 0.1f }, 0.f,
-              [] (float v, int) { return v <= -59.9f ? String ("-inf dB") : String (v, 1) + " dB"; },
-              [] (const String& t) { return t.containsIgnoreCase ("inf") ? -60.f : t.getFloatValue(); });
-    addFloat (ids::pitch, "Pitch", { -48.f, 48.f, 1.f }, 0.f,
-              [=] (float v, int) { return sign (v) + String (v, 0) + " st"; },
-              [] (const String& t) { return t.getFloatValue(); });
-    addFloat (ids::fine, "Fine", { -100.f, 100.f, 0.1f }, 0.f,
-              [=] (float v, int) { return sign (v) + String (v, 1) + " ct"; },
-              [] (const String& t) { return t.getFloatValue(); });
-    layout.add (std::make_unique<AudioParameterInt> (PID { ids::root, 1 }, "Root Key", 0, 127, 60,
-                AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return noteName (v); })
-                                             .withValueFromStringFunction ([] (const String& t) { return parseNoteName (t); })));
-    addBool (ids::normalize, "Normalize", false);
-    addFloat (ids::start, "Start", { 0.f, 1.f, 0.f }, 0.f, fmtPct, parsePct);
-    addFloat (ids::velocity, "Velocity", { 0.f, 1.f, 0.01f }, 0.5f,
-              [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
+    for (osc = 0; osc < kMaxOsc; ++osc)
+    {
+        // ---- sample ----
+        addFloat (ids::volume, "Volume", { -60.f, 12.f, 0.1f }, 0.f,
+                  [] (float v, int) { return v <= -59.9f ? String ("-inf dB") : String (v, 1) + " dB"; },
+                  [] (const String& t) { return t.containsIgnoreCase ("inf") ? -60.f : t.getFloatValue(); });
+        addFloat (ids::pitch, "Pitch", { -48.f, 48.f, 1.f }, 0.f,
+                  [=] (float v, int) { return sign (v) + String (v, 0) + " st"; },
+                  [] (const String& t) { return t.getFloatValue(); });
+        addFloat (ids::fine, "Fine", { -100.f, 100.f, 0.1f }, 0.f,
+                  [=] (float v, int) { return sign (v) + String (v, 1) + " ct"; },
+                  [] (const String& t) { return t.getFloatValue(); });
+        layout.add (std::make_unique<AudioParameterInt> (PID { oscParamId (ids::root, osc), 1 }, oscName ("Root Key"), 0, 127, 60,
+                    AudioParameterIntAttributes().withStringFromValueFunction ([] (int v, int) { return noteName (v); })
+                                                 .withValueFromStringFunction ([] (const String& t) { return parseNoteName (t); })));
+        addBool (ids::normalize, "Normalize", false);
+        addFloat (ids::start, "Start", { 0.f, 1.f, 0.f }, 0.f, fmtPct, parsePct);
+        addFloat (ids::velocity, "Velocity", { 0.f, 1.f, 0.01f }, 0.5f,
+                  [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
 
-    // ---- sustain loop ----
-    addBool (ids::loopOn, "Sustain Loop", false);
-    addFloat (ids::loopStart, "Loop Start", { 0.f, 1.f, 0.f }, 0.35f, fmtPct, parsePct);
-    addFloat (ids::loopEnd, "Loop End", { 0.f, 1.f, 0.f }, 0.65f, fmtPct, parsePct);
-    addFloat (ids::loopXfade, "Loop Xfade", { 1.f, 1000.f, 0.1f }, 40.f, fmtMsT, parseMsT, 80.f);
+        // ---- sustain loop ----
+        addBool (ids::loopOn, "Sustain Loop", false);
+        addFloat (ids::loopStart, "Loop Start", { 0.f, 1.f, 0.f }, 0.35f, fmtPct, parsePct);
+        addFloat (ids::loopEnd, "Loop End", { 0.f, 1.f, 0.f }, 0.65f, fmtPct, parsePct);
+        addFloat (ids::loopXfade, "Loop Xfade", { 1.f, 1000.f, 0.1f }, 40.f, fmtMsT, parseMsT, 80.f);
 
-    // ---- time / formant (default: formant OFF, speed hold ON) ----
-    addBool (ids::formantHold, "Formant Hold", false);
-    addBool (ids::speedHold, "Speed Hold", true);
-    addBool (ids::flatten, "Pitch Flatten", false);
-    addFloat (ids::denoise, "Denoise", { 0.f, 1.f, 0.01f }, 0.f,
-              [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
+        // ---- time / formant (default: formant OFF, speed hold ON) ----
+        addBool (ids::formantHold, "Formant Hold", false);
+        addBool (ids::speedHold, "Speed Hold", true);
+        addBool (ids::flatten, "Pitch Flatten", false);
+        addFloat (ids::denoise, "Denoise", { 0.f, 1.f, 0.01f }, 0.f,
+                  [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
 
-    // ---- amp envelope ----
-    addFloat (ids::attack, "Attack", { 1.f, 5000.f, 0.1f }, 3.f, fmtMsT, parseMsT, 100.f);
-    addFloat (ids::decay, "Decay", { 1.f, 10000.f, 0.1f }, 300.f, fmtMsT, parseMsT, 400.f);
-    addFloat (ids::sustain, "Sustain", { 0.f, 1.f, 0.001f }, 1.f,
-              [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
-    addFloat (ids::release, "Release", { 5.f, 10000.f, 0.1f }, 120.f, fmtMsT, parseMsT, 400.f);
+        // ---- amp envelope ----
+        addFloat (ids::attack, "Attack", { 1.f, 5000.f, 0.1f }, 3.f, fmtMsT, parseMsT, 100.f);
+        addFloat (ids::decay, "Decay", { 1.f, 10000.f, 0.1f }, 300.f, fmtMsT, parseMsT, 400.f);
+        addFloat (ids::sustain, "Sustain", { 0.f, 1.f, 0.001f }, 1.f,
+                  [] (float v, int) { return String (juce::roundToInt (v * 100.f)) + " %"; }, parsePct);
+        addFloat (ids::release, "Release", { 5.f, 10000.f, 0.1f }, 120.f, fmtMsT, parseMsT, 400.f);
 
-    // ---- vibrato ----
-    addFloat (ids::vibRate, "Vib Rate", { 0.1f, 200.f, 0.01f }, 5.5f,
-              [] (float v, int) { return String (v, 2) + " Hz"; },
-              [] (const String& t) { return t.getFloatValue(); }, 8.f);
-    addFloat (ids::vibDepth, "Vib Depth", { 0.f, 1200.f, 0.1f }, 0.f,
-              [] (float v, int) { return String (v, 1) + " ct"; },
-              [] (const String& t) { return t.getFloatValue(); }, 60.f);
-    addFloat (ids::vibDelay, "Vib Delay", { 0.f, 3000.f, 1.f }, 0.f, fmtMsT, parseMsT, 400.f);
+        // ---- vibrato ----
+        addFloat (ids::vibRate, "Vib Rate", { 0.1f, 200.f, 0.01f }, 5.5f,
+                  [] (float v, int) { return String (v, 2) + " Hz"; },
+                  [] (const String& t) { return t.getFloatValue(); }, 8.f);
+        addFloat (ids::vibDepth, "Vib Depth", { 0.f, 1200.f, 0.1f }, 0.f,
+                  [] (float v, int) { return String (v, 1) + " ct"; },
+                  [] (const String& t) { return t.getFloatValue(); }, 60.f);
+        addFloat (ids::vibDelay, "Vib Delay", { 0.f, 3000.f, 1.f }, 0.f, fmtMsT, parseMsT, 400.f);
 
-    // ---- glide / bend ----
-    addFloat (ids::glide, "Glide", { 0.f, 2000.f, 1.f }, 0.f, fmtMsT, parseMsT, 250.f);
-    addBool (ids::mono, "Mono", false);
-    addFloat (ids::bendRange, "Bend Range", { 0.f, 24.f, 1.f }, 2.f,
-              [] (float v, int) { return String (v, 0) + " st"; },
-              [] (const String& t) { return t.getFloatValue(); });
+        // ---- glide / bend ----
+        addFloat (ids::glide, "Glide", { 0.f, 2000.f, 1.f }, 0.f, fmtMsT, parseMsT, 250.f);
+        addBool (ids::mono, "Mono", false);
+        addFloat (ids::bendRange, "Bend Range", { 0.f, 24.f, 1.f }, 2.f,
+                  [] (float v, int) { return String (v, 0) + " st"; },
+                  [] (const String& t) { return t.getFloatValue(); });
 
-    // ---- pre-filter ----
-    addBool (ids::preOn, "Pre-filter", false);
-    auto fmtHz = [] (float v, int) { return v >= 1000.f ? String (v / 1000.f, 2) + " kHz" : String (v, 0) + " Hz"; };
-    auto parseHz = [] (const String& t) { auto s = t.trim().toLowerCase(); return s.contains ("k") ? s.getFloatValue() * 1000.f : s.getFloatValue(); };
-    addFloat (ids::preHp, "Pre HP Cutoff", { 20.f, 20000.f, 1.f }, 20.f, fmtHz, parseHz, 600.f);
-    addFloat (ids::preLp, "Pre LP Cutoff", { 20.f, 20000.f, 1.f }, 20000.f, fmtHz, parseHz, 3000.f);
+        // ---- pre-filter ----
+        addBool (ids::preOn, "Pre-filter", false);
+        auto fmtHz = [] (float v, int) { return v >= 1000.f ? String (v / 1000.f, 2) + " kHz" : String (v, 0) + " Hz"; };
+        auto parseHz = [] (const String& t) { auto s = t.trim().toLowerCase(); return s.contains ("k") ? s.getFloatValue() * 1000.f : s.getFloatValue(); };
+        addFloat (ids::preHp, "Pre HP Cutoff", { 20.f, 20000.f, 1.f }, 20.f, fmtHz, parseHz, 600.f);
+        addFloat (ids::preLp, "Pre LP Cutoff", { 20.f, 20000.f, 1.f }, 20000.f, fmtHz, parseHz, 3000.f);
+
+    }
+
+    // number of OSCs in use (not automatable, stored with the project)
+    layout.add (std::make_unique<AudioParameterInt> (PID { ids::oscCount, 1 }, "OSC Count", 1, kMaxOsc, 1,
+                AudioParameterIntAttributes().withAutomatable (false)));
 
     return layout;
 }

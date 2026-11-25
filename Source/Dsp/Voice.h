@@ -1,12 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include "Adsr.h"
-#include "FormantEngine.h"
+#include "Additive.h"
 #include "SampleTypes.h"
 #include <array>
 #include <cstdint>
 
 namespace oto
 {
+// Loop range handed to the synthesis (source samples)
+struct LoopInfo { bool active = false; double s = 0, e = 0, len = 0, xf = 1; };
+
 // Per-block parameter snapshot handed to every voice
 struct VoiceParams
 {
@@ -27,6 +31,12 @@ struct VoiceParams
     float glideMs = 0.f;
 };
 
+// Additive voice.
+// The sample is stored as partials (amplitude + phase per frame) plus a residual. Every block the voice rebuilds
+//   frequency = h * (pitch of the note)      amplitude = amplitude of the partial (or of the same absolute frequency
+//   phase     = h * Theta + phase offset                   when Formant Hold is on)
+// for every partial and sums the oscillators. Speed Hold / varispeed only decide how fast the read position
+// moves through the analysis frames; the pitch is carried by Theta, so the two are independent.
 class Voice
 {
 public:
@@ -36,13 +46,13 @@ public:
     void start (const SampleData& d, int midiNote, float velocity01, float glideFromPitch,
                 const VoiceParams& p, std::uint64_t serial) noexcept;
     void release() noexcept { gated = false; pedalHeld = false; adsr.noteOff(); }
-    void kill() noexcept { active = false; gated = false; pedalHeld = false; engInited = false; adsr.kill(); }
+    void kill() noexcept { active = false; gated = false; pedalHeld = false; adsr.kill(); }
 
     bool isActive() const noexcept { return active; }
     bool isGated() const noexcept { return gated; }
     int  note() const noexcept { return note_; }
     // current read position in source samples (for the UI playhead)
-    double sourcePosition() const noexcept { return engInited ? eng.position() : (usingGrains ? a : pos); }
+    double sourcePosition() const noexcept { return a; }
     float currentPitch() const noexcept { return (float) note_ + glideOffset; }
     std::uint64_t serial() const noexcept { return serial_; }
 
@@ -54,9 +64,9 @@ public:
     bool preview = false;       // started by right-click on the waveform (ignored by MIDI note-off)
 
 private:
-    struct Grain { bool active = false; double c1 = 0, g = 1, shift = 0, offA = 0, offB = 0, frac = 0; float gain = 1.f, w2 = 0.f, wA = 0.f, wB = 0.f; int age = 0, len = 0; };
-
-    void spawnGrain (const SampleData& d, const VoiceParams& p, double r, double k, const LoopInfo& L) noexcept;
+    // partials of one channel at one source position (loop cross-fade and Denoise included)
+    void evalAt (const AdditiveModel& M, const HarmonicChannel& hc, double pos, const EvalCfg& cfg,
+                 const LoopInfo& L, float denoiseW, PartialSet& out) noexcept;
 
     double sr = 44100.0;
     Adsr adsr;
@@ -65,21 +75,15 @@ private:
     std::uint64_t serial_ = 0;
     float velocity = 1.f;
 
-    double pos = 0.0;                // plain resampling read position
-    double a = 0.0;                  // grain engine analysis position
-    double spawnCountdown = 0.0;
-    bool firstGrain = true, sourceDone = false, loopArmed = false, usingGrains = false;
-    std::array<Grain, 48> grains {};
-
-    float bendCur = 0.f, gainSm = 0.f, glideOffset = 0.f;
-    bool initDone = false, usingGrainsPrev = false;
+    double a = 0.0;                  // read position in source samples
+    double theta = 0.0;              // phase of the output fundamental in cycles (0..1)
+    bool loopArmed = false, initDone = false;
+    float bendCur = 0.f, gainSm = 0.f, glideOffset = 0.f, rPrev = 1.f;
     double lfoPhase = 0.0, vibTime = 0.0;
 
-    // formant-preserving engine (runs at the source rate, resampled to the host rate)
-    FormantEngine eng;
-    bool engInited = false, engDone = false, lpChosen = false;
-    double engFrac = 0.0;
-    int engTail = 0;
-    float ringL[4] = {}, ringR[4] = {};
+    // scratch (kept here so that the audio thread never allocates)
+    PartialSet setA, setB, tapA, tapB, tapC;
+    EvalScratch scratch;
+    float pStart[kMaxOutPartials], pInc[kMaxOutPartials];
 };
 }

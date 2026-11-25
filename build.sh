@@ -143,9 +143,37 @@ if [ -d "$ART/Standalone/Oto Sampler.app" ]; then
     codesign --force --deep --sign - "$DIST/Oto Sampler.app"
 fi
 
+# ---- license texts for distribution, collected from the sources that were actually built ----
+JSRC="$BDIR/_deps/juce-src"
+LIC="$DIST/licenses"
+mkdir -p "$LIC"
+cp "LICENSE" "$LIC/OtoSampler-AGPL-3.0.txt"
+[ -f "THIRD_PARTY_NOTICES.md" ] && cp "THIRD_PARTY_NOTICES.md" "$LIC/"
+[ -f "$JSRC/LICENSE.md" ] && cp "$JSRC/LICENSE.md" "$LIC/JUCE-LICENSE.md"
+if JVER="$(git -C "$JSRC" describe --tags --always 2>/dev/null)"; then
+    echo "JUCE $JVER" > "$LIC/JUCE-VERSION.txt"
+fi
+copylic() {
+    local dir="$1" name="$2"
+    [ -d "$dir" ] || return 0
+    while IFS= read -r -d '' f; do
+        cp "$f" "$LIC/${name}-$(basename "$f")"
+    done < <(find "$dir" -maxdepth 1 -type f \( -iname '*licen*' -o -iname 'copying*' \) -print0)
+}
+copylic "$JSRC/modules/juce_audio_processors/format_types/VST3_SDK" VST3_SDK
+copylic "$JSRC/modules/juce_audio_processors_headless/format_types/VST3_SDK" VST3_SDK
+copylic "$JSRC/modules/juce_audio_formats/codecs/oggvorbis" OggVorbis
+copylic "$JSRC/modules/juce_audio_formats/codecs/flac" FLAC
+copylic "$JSRC/modules/juce_graphics/image_formats/pnglib" libpng
+copylic "$JSRC/modules/juce_graphics/image_formats/jpglib" libjpeg
+copylic "$JSRC/modules/juce_core/zip/zlib" zlib
+copylic "$JSRC/modules/juce_graphics/fonts/harfbuzz" HarfBuzz
+copylic "$JSRC/modules/juce_graphics/unicode/sheenbidi" SheenBidi
+
 echo ""
 echo "=== Done ==="
 [ -d "$DIST/Oto Sampler.vst3" ]      && echo "VST3       : $DIST/Oto Sampler.vst3"
 [ -d "$DIST/Oto Sampler.component" ] && echo "AU         : $DIST/Oto Sampler.component"
 [ -d "$DIST/Oto Sampler.app" ]       && echo "Standalone : $DIST/Oto Sampler.app"
+echo "Licenses   : $DIST/licenses  (ship this folder with the plugin)"
 echo "Run ./install.sh to copy the VST3 and AU plugins to your Audio Plug-Ins folder."
