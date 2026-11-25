@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include <cmath>
+#include <complex>
 #include <vector>
 namespace oto
 {
@@ -27,6 +29,12 @@ struct Biquad
         a1 = -2.0 * cw; a2 = 1.0 - al;
         b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
     }
+    // Frequency response at angular frequency w (radians per sample)
+    std::complex<double> response (double w) const noexcept
+    {
+        const std::complex<double> z1i = std::polar (1.0, -w), z2i = std::polar (1.0, -2.0 * w);
+        return (b0 + b1 * z1i + b2 * z2i) / (1.0 + a1 * z1i + a2 * z2i);
+    }
     double process (double x) noexcept
     {
         const double y = b0 * x + z1;
@@ -48,6 +56,12 @@ struct ButterworthCascade
             const double q = 1.0 / (2.0 * std::sin ((2.0 * k - 1.0) * 3.14159265358979323846 / (4.0 * kSections)));
             s[k - 1].set (type, fs, fc, q);
         }
+    }
+    std::complex<double> response (double w) const noexcept
+    {
+        std::complex<double> h (1.0, 0.0);
+        for (const auto& b : s) h *= b.response (w);
+        return h;
     }
     double process (double x) noexcept
     {

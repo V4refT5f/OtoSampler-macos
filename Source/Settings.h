@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 #include "Common.h"
 
@@ -10,7 +11,7 @@ struct UiSettings
     bool  dark = false;
     float hue = -1.f;          // -1 = default accent, otherwise 0..1
     bool  animations = true;
-    int   width = 1180, height = 580;   // editor size
+    int   width = 1180, height = 624;   // editor size
     bool  keyboard = false;             // height was saved with the keyboard shown (written by older versions only)
     bool  keyboardKnown = false;        // true when the settings file has the keyboard entry
 };

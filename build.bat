@@ -5,7 +5,8 @@ cd /d "%~dp0"
 rem Usage:  build.bat                 configure + build Release
 rem         build.bat clean           delete the build folder first
 rem         build.bat debug           build Debug instead of Release
-rem         build.bat juce=8.0.8      use another JUCE tag
+rem         build.bat juce=8.0.14     use another JUCE tag
+rem See also: open_solution.bat (configure only and open the .sln in Visual Studio)
 rem
 rem The build runs in a SHORT folder in %SystemDrive%\oto_build\HASH, where HASH is made from the path of this folder. JUCE builds its VST3 helper in a very deep folder,
 rem and long paths stop the build right after "juce_VST3ManifestHelper.cpp".
@@ -50,6 +51,14 @@ if errorlevel 1 (
     set "GEN=Visual Studio 17 2022"
 )
 
+rem Visual Studio 2026 Insiders is a prerelease instance: point CMake at it explicitly with vswhere.
+set "CFG_EXTRA="
+set "VSINST="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if "%GEN%"=="Visual Studio 18 2026" if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -prerelease -latest -products * -version "[18.0,19.0)" -property installationPath`) do set "VSINST=%%I"
+if defined VSINST set CFG_EXTRA=-DCMAKE_GENERATOR_INSTANCE="%VSINST%"
+if defined VSINST echo Visual Studio instance: %VSINST%
+
 if "%CLEAN%"=="1" if exist "%BDIR%" rmdir /s /q "%BDIR%"
 
 if exist "%BDIR%\CMakeCache.txt" (
@@ -67,7 +76,7 @@ echo.
 echo [1/2] Configure: %GEN%  (build folder: %BDIR%)
 echo       JUCE is downloaded with Git on the first run. This can take a few minutes.
 set "STEP=configure"
-cmake -S "%~dp0." -B "%BDIR%" -G "%GEN%" -A x64 %JUCE_OPT%
+cmake -S "%~dp0." -B "%BDIR%" -G "%GEN%" -A x64 %CFG_EXTRA% %JUCE_OPT%
 if errorlevel 1 goto :fail
 
 echo.
@@ -87,10 +96,29 @@ mkdir "%DIST%"
 xcopy "%ART%\VST3\Oto Sampler.vst3" "%DIST%\Oto Sampler.vst3\" /E /I /Y /Q >nul
 if exist "%ART%\Standalone\Oto Sampler.exe" copy /Y "%ART%\Standalone\Oto Sampler.exe" "%DIST%\" >nul
 
+rem ---- license texts for distribution, collected from the sources that were actually built ----
+set "JSRC=%BDIR%\_deps\juce-src"
+set "LIC=%DIST%\licenses"
+mkdir "%LIC%" >nul 2>&1
+copy /Y "%~dp0LICENSE" "%LIC%\OtoSampler-AGPL-3.0.txt" >nul
+if exist "%~dp0THIRD_PARTY_NOTICES.md" copy /Y "%~dp0THIRD_PARTY_NOTICES.md" "%LIC%\" >nul
+if exist "%JSRC%\LICENSE.md" copy /Y "%JSRC%\LICENSE.md" "%LIC%\JUCE-LICENSE.md" >nul
+for /f "delims=" %%V in ('git -C "%JSRC%" describe --tags --always 2^>nul') do (echo JUCE %%V)> "%LIC%\JUCE-VERSION.txt"
+call :copylic "%JSRC%\modules\juce_audio_processors\format_types\VST3_SDK" VST3_SDK
+call :copylic "%JSRC%\modules\juce_audio_processors_headless\format_types\VST3_SDK" VST3_SDK
+call :copylic "%JSRC%\modules\juce_audio_formats\codecs\oggvorbis" OggVorbis
+call :copylic "%JSRC%\modules\juce_audio_formats\codecs\flac" FLAC
+call :copylic "%JSRC%\modules\juce_graphics\image_formats\pnglib" libpng
+call :copylic "%JSRC%\modules\juce_graphics\image_formats\jpglib" libjpeg
+call :copylic "%JSRC%\modules\juce_core\zip\zlib" zlib
+call :copylic "%JSRC%\modules\juce_graphics\fonts\harfbuzz" HarfBuzz
+call :copylic "%JSRC%\modules\juce_graphics\unicode\sheenbidi" SheenBidi
+
 echo.
 echo === Done ===
 echo VST3       : %DIST%\Oto Sampler.vst3
 echo Standalone : %DIST%\Oto Sampler.exe
+echo Licenses   : %DIST%\licenses  (ship this folder with the plugin)
 echo Run install.bat as Administrator to copy the VST3 to the system VST3 folder.
 if not defined OTO_NO_PAUSE pause
 exit /b 0
@@ -98,7 +126,7 @@ exit /b 0
 :fail
 echo.
 echo ===== Build failed =====
-if "%STEP%"=="configure" cmake -S "%~dp0." -B "%BDIR%" -G "%GEN%" -A x64 %JUCE_OPT% > "%LOG%" 2>&1
+if "%STEP%"=="configure" cmake -S "%~dp0." -B "%BDIR%" -G "%GEN%" -A x64 %CFG_EXTRA% %JUCE_OPT% > "%LOG%" 2>&1
 if "%STEP%"=="build" cmake --build "%BDIR%" --config %CONFIG% > "%LOG%" 2>&1
 if exist "%LOG%" (
     echo Full log: %LOG%
@@ -107,3 +135,9 @@ if exist "%LOG%" (
 )
 if not defined OTO_NO_PAUSE pause
 exit /b 1
+
+rem copylic FOLDER NAME : copy the license / copying files of a bundled library
+:copylic
+if not exist "%~1\" exit /b 0
+for %%F in ("%~1\*licen*" "%~1\COPYING*" "%~1\LICENSE*") do if exist "%%~F" copy /Y "%%~F" "%LIC%\%~2-%%~nxF" >nul
+exit /b 0

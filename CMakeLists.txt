@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 cmake_minimum_required(VERSION 3.25)
 
-project(OtoSampler VERSION 1.0.0 LANGUAGES C CXX)
+project(OtoSampler VERSION 2.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +57,8 @@ target_sources(OtoSampler PRIVATE
     Source/Common.h
     Source/Params.h
     Source/Settings.h
+    Source/OscUnit.h
+    Source/OscUnit.cpp
     Source/PluginProcessor.h
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
@@ -64,10 +67,10 @@ target_sources(OtoSampler PRIVATE
     Source/Dsp/Adsr.h
     Source/Dsp/Biquad.h
     Source/Dsp/Interp.h
-    Source/Dsp/Lpc.h
-    Source/Dsp/Lpc.cpp
-    Source/Dsp/FormantEngine.h
-    Source/Dsp/FormantEngine.cpp
+    Source/Dsp/AdditiveTypes.h
+    Source/Dsp/Additive.h
+    Source/Dsp/Additive.cpp
+    Source/Dsp/Fft.h
     Source/Dsp/PitchAnalyzer.h
     Source/Dsp/PitchAnalyzer.cpp
     Source/Dsp/Voice.h
@@ -76,6 +79,10 @@ target_sources(OtoSampler PRIVATE
     Source/UI/Widgets.h
     Source/UI/WaveformView.h
     Source/UI/Panels.h
+    Source/UI/OscBar.h
+    Source/UI/OscMenu.h
+    Source/UI/OscPage.h
+    Source/UI/VirtualKeyboard.h
 )
 
 target_include_directories(OtoSampler PRIVATE Source)
